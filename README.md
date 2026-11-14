@@ -31,6 +31,21 @@ DELETE FROM users WHERE id = 2;
 
 These statements run directly against Neon. No local PostgreSQL container is used.
 
+## Run the connector
+
+Install Go, start local Redis, then run the connector from the `worker` directory. The connector reads `SOURCE_DB_URL` and `REDIS_URL` only from environment variables, checks both connections at startup, and waits until you press `Ctrl+C`.
+
+PowerShell:
+
+```powershell
+make up
+Get-Content .env | ForEach-Object { if ($_ -match '^([^#][^=]*)=(.*)$') { [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process') } }
+Set-Location worker
+go run ./cmd/connector
+```
+
+`SOURCE_DB_URL` must be the Neon direct endpoint, never the `-pooler` endpoint, and must include a secure `sslmode`.
+
 ## Run Redis
 
 ```sh
