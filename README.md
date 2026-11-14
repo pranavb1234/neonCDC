@@ -15,6 +15,22 @@ This first step provides the local Redis service and configuration scaffold. The
 
 Neon must use SSL; the example connection string includes `sslmode=require`.
 
+## Create sample tables in Neon
+
+Open your Neon project, choose the database, and open **SQL Editor**. Paste and run [`sample/source-init.sql`](sample/source-init.sql). Alternatively, connect to Neon using the direct connection string and run that file with any PostgreSQL client.
+
+The script creates `users` and `orders`, adds a few rows, and sets `REPLICA IDENTITY FULL` on both tables so later CDC events include the complete row identity.
+
+After running it, use the Neon SQL Editor to create changes manually:
+
+```sql
+INSERT INTO users (name, email) VALUES ('Linus Torvalds', 'linus@example.com');
+UPDATE orders SET status = 'shipped' WHERE id = 1;
+DELETE FROM users WHERE id = 2;
+```
+
+These statements run directly against Neon. No local PostgreSQL container is used.
+
 ## Run Redis
 
 ```sh
