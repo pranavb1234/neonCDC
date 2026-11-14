@@ -115,6 +115,7 @@ func ensureSlot(ctx context.Context, conn *pgconn.PgConn, slotName string) (pglo
 }
 
 func readMessages(ctx context.Context, conn *pgconn.PgConn, logger *slog.Logger) error {
+	decoder := newEventDecoder()
 	for {
 		message, err := conn.ReceiveMessage(ctx)
 		if err != nil {
@@ -151,6 +152,13 @@ func readMessages(ctx context.Context, conn *pgconn.PgConn, logger *slog.Logger)
 				return errors.New("could not parse pgoutput message")
 			}
 			logger.Info("replication message", "type", logicalMessage.Type().String(), "wal_start", xlogData.WALStart.String())
+			events, err := decoder.Process(logicalMessage)
+			if err != nil {
+				return err
+			}
+			for _, event := range events {
+				logger.Info("cdc event", "event", event)
+			}
 		}
 	}
 }
