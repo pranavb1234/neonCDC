@@ -1,0 +1,2 @@
+-- Sample Neon schema for later CDC connector development.
+-- Tables will be added with the connector implementation.
