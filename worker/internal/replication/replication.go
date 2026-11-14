@@ -137,7 +137,7 @@ func readMessages(ctx context.Context, conn *pgconn.PgConn, logger *slog.Logger)
 			}
 			logger.Debug("replication keepalive", "reply_requested", keepalive.ReplyRequested)
 			if keepalive.ReplyRequested {
-				if err := pglogrepl.SendStandbyStatusUpdate(ctx, conn, pglogrepl.StandbyStatusUpdate{ReplyRequested: true}); err != nil {
+				if err := pglogrepl.SendStandbyStatusUpdate(ctx, conn, pglogrepl.StandbyStatusUpdate{}); err != nil {
 					return errors.New("could not reply to PostgreSQL keepalive")
 				}
 			}
