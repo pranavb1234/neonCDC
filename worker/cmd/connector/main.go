@@ -12,6 +12,7 @@ import (
 	"github.com/pranavb1234/neonCDC/worker/internal/logging"
 	"github.com/pranavb1234/neonCDC/worker/internal/postgres"
 	rediscache "github.com/pranavb1234/neonCDC/worker/internal/redis"
+	"github.com/pranavb1234/neonCDC/worker/internal/replication"
 )
 
 func main() {
@@ -47,7 +48,14 @@ func run(logger *slog.Logger) error {
 	defer redisClient.Close()
 
 	logger.Info("connector connected", "postgres_host", cfg.PostgresHost, "redis_host", cfg.RedisHost)
-	<-ctx.Done()
+	if err := replication.Run(ctx, db, replication.Config{
+		SourceDBURL:     cfg.SourceDBURL,
+		SlotName:        cfg.ReplicationSlot,
+		PublicationName: cfg.PublicationName,
+	}, logger); err != nil {
+		return err
+	}
+
 	logger.Info("connector shutting down")
 	return nil
 }

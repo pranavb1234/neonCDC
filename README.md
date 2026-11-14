@@ -46,6 +46,12 @@ go run ./cmd/connector
 
 `SOURCE_DB_URL` must be the Neon direct endpoint, never the `-pooler` endpoint, and must include a secure `sslmode`.
 
+## Enable CDC reading
+
+Enable **Logical Replication** in Neon project settings before starting the connector. The connector checks that `wal_level` is `logical`, confirms the connected role has `REPLICATION`, creates `cdc_lite_publication` for the sample `users` and `orders` tables if needed, and creates or reuses `cdc_lite_slot` with `pgoutput`.
+
+You can override these names with `PUBLICATION_NAME` and `REPLICATION_SLOT`. Use a role created through Neon Console, CLI, or API: Neon documents that SQL-created roles cannot be granted the required replication privilege.
+
 ## Run Redis
 
 ```sh

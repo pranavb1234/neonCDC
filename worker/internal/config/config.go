@@ -8,10 +8,12 @@ import (
 )
 
 type Config struct {
-	SourceDBURL  string
-	RedisURL     string
-	PostgresHost string
-	RedisHost    string
+	SourceDBURL     string
+	RedisURL        string
+	ReplicationSlot string
+	PublicationName string
+	PostgresHost    string
+	RedisHost       string
 }
 
 func Load() (Config, error) {
@@ -40,15 +42,41 @@ func Load() (Config, error) {
 	if err != nil || (redis.Scheme != "redis" && redis.Scheme != "rediss") || redis.Hostname() == "" {
 		return Config{}, errors.New("REDIS_URL must be a Redis connection URL")
 	}
+	replicationSlot := envOrDefault("REPLICATION_SLOT", "cdc_lite_slot")
+	publicationName := envOrDefault("PUBLICATION_NAME", "cdc_lite_publication")
+	if !isIdentifier(replicationSlot) || !isIdentifier(publicationName) {
+		return Config{}, errors.New("REPLICATION_SLOT and PUBLICATION_NAME must be lowercase PostgreSQL identifiers")
+	}
 
 	return Config{
-		SourceDBURL:  sourceDBURL,
-		RedisURL:     redisURL,
-		PostgresHost: source.Hostname(),
-		RedisHost:    redis.Hostname(),
+		SourceDBURL:     sourceDBURL,
+		RedisURL:        redisURL,
+		ReplicationSlot: replicationSlot,
+		PublicationName: publicationName,
+		PostgresHost:    source.Hostname(),
+		RedisHost:       redis.Hostname(),
 	}, nil
 }
 
 func secureSSLMode(mode string) bool {
 	return mode == "require" || mode == "verify-ca" || mode == "verify-full"
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func isIdentifier(value string) bool {
+	if value == "" || value[0] < 'a' || value[0] > 'z' {
+		return false
+	}
+	for _, character := range value {
+		if !(character >= 'a' && character <= 'z') && !(character >= '0' && character <= '9') && character != '_' {
+			return false
+		}
+	}
+	return true
 }
