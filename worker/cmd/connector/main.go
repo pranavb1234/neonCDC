@@ -48,11 +48,12 @@ func run(logger *slog.Logger) error {
 	defer redisClient.Close()
 
 	logger.Info("connector connected", "postgres_host", cfg.PostgresHost, "redis_host", cfg.RedisHost)
+	publisher := rediscache.NewStreamPublisher(redisClient)
 	if err := replication.Run(ctx, db, replication.Config{
 		SourceDBURL:     cfg.SourceDBURL,
 		SlotName:        cfg.ReplicationSlot,
 		PublicationName: cfg.PublicationName,
-	}, logger); err != nil {
+	}, publisher, logger); err != nil {
 		return err
 	}
 

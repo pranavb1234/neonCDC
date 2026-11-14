@@ -21,7 +21,11 @@ type Config struct {
 	PublicationName string
 }
 
-func Run(ctx context.Context, db *pgx.Conn, cfg Config, logger *slog.Logger) error {
+type EventPublisher interface {
+	Publish(context.Context, []Event) error
+}
+
+func Run(ctx context.Context, db *pgx.Conn, cfg Config, publisher EventPublisher, logger *slog.Logger) error {
 	if err := verifyPrerequisites(ctx, db); err != nil {
 		return err
 	}
@@ -56,7 +60,7 @@ func Run(ctx context.Context, db *pgx.Conn, cfg Config, logger *slog.Logger) err
 	}
 
 	logger.Info("logical replication started", "slot", cfg.SlotName, "publication", cfg.PublicationName)
-	return readMessages(ctx, conn, logger)
+	return readMessages(ctx, conn, publisher, logger)
 }
 
 func verifyPrerequisites(ctx context.Context, db *pgx.Conn) error {
@@ -114,7 +118,7 @@ func ensureSlot(ctx context.Context, conn *pgconn.PgConn, slotName string) (pglo
 	return 0, replicationError("could not create replication slot; enable logical replication and use a Neon role with REPLICATION permission", err)
 }
 
-func readMessages(ctx context.Context, conn *pgconn.PgConn, logger *slog.Logger) error {
+func readMessages(ctx context.Context, conn *pgconn.PgConn, publisher EventPublisher, logger *slog.Logger) error {
 	decoder := newEventDecoder()
 	for {
 		message, err := conn.ReceiveMessage(ctx)
@@ -159,8 +163,25 @@ func readMessages(ctx context.Context, conn *pgconn.PgConn, logger *slog.Logger)
 			for _, event := range events {
 				logger.Info("cdc event", "event", event)
 			}
+			if commit, ok := logicalMessage.(*pglogrepl.CommitMessage); ok {
+				if err := publisher.Publish(ctx, events); err != nil {
+					return errors.New("could not publish committed events to Redis; PostgreSQL LSN was not acknowledged")
+				}
+				if err := acknowledgeCommit(ctx, conn, commit.TransactionEndLSN); err != nil {
+					return errors.New("could not acknowledge PostgreSQL LSN after Redis publish")
+				}
+				logger.Info("transaction published and acknowledged", "event_count", len(events), "commit_lsn", commit.CommitLSN.String())
+			}
 		}
 	}
+}
+
+func acknowledgeCommit(ctx context.Context, conn *pgconn.PgConn, lsn pglogrepl.LSN) error {
+	return pglogrepl.SendStandbyStatusUpdate(ctx, conn, pglogrepl.StandbyStatusUpdate{
+		WALWritePosition: lsn,
+		WALFlushPosition: lsn,
+		WALApplyPosition: lsn,
+	})
 }
 
 func replicationConnectionURL(sourceDBURL string) (string, error) {
