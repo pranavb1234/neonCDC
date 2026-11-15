@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -55,7 +60,7 @@ func run(logger *slog.Logger) error {
 	logger.Info("delivery worker connected", "redis_host", cfg.RedisHost)
 
 	httpClient := &http.Client{Timeout: 10 * time.Second}
-	return consume(ctx, client, httpClient, cfg.WebhookURL, logger)
+	return consume(ctx, client, httpClient, cfg.WebhookURL, cfg.WebhookSecret, logger)
 }
 
 func ensureConsumerGroup(ctx context.Context, client *redis.Client) error {
@@ -66,8 +71,8 @@ func ensureConsumerGroup(ctx context.Context, client *redis.Client) error {
 	return nil
 }
 
-func consume(ctx context.Context, client *redis.Client, httpClient *http.Client, webhookURL string, logger *slog.Logger) error {
-	if err := consumePending(ctx, client, httpClient, webhookURL, logger); err != nil {
+func consume(ctx context.Context, client *redis.Client, httpClient *http.Client, webhookURL, webhookSecret string, logger *slog.Logger) error {
+	if err := consumePending(ctx, client, httpClient, webhookURL, webhookSecret, logger); err != nil {
 		return err
 	}
 
@@ -91,7 +96,7 @@ func consume(ctx context.Context, client *redis.Client, httpClient *http.Client,
 
 		for _, stream := range streams {
 			for _, message := range stream.Messages {
-				if err := handleMessage(ctx, client, httpClient, webhookURL, message, logger); err != nil {
+				if err := handleMessage(ctx, client, httpClient, webhookURL, webhookSecret, message, logger); err != nil {
 					return err
 				}
 			}
@@ -99,7 +104,7 @@ func consume(ctx context.Context, client *redis.Client, httpClient *http.Client,
 	}
 }
 
-func consumePending(ctx context.Context, client *redis.Client, httpClient *http.Client, webhookURL string, logger *slog.Logger) error {
+func consumePending(ctx context.Context, client *redis.Client, httpClient *http.Client, webhookURL, webhookSecret string, logger *slog.Logger) error {
 	for {
 		streams, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
 			Group:    consumerGroup,
@@ -118,7 +123,7 @@ func consumePending(ctx context.Context, client *redis.Client, httpClient *http.
 		}
 		for _, stream := range streams {
 			for _, message := range stream.Messages {
-				if err := handleMessage(ctx, client, httpClient, webhookURL, message, logger); err != nil {
+				if err := handleMessage(ctx, client, httpClient, webhookURL, webhookSecret, message, logger); err != nil {
 					return err
 				}
 			}
@@ -135,8 +140,8 @@ func hasMessages(streams []redis.XStream) bool {
 	return false
 }
 
-func handleMessage(ctx context.Context, client *redis.Client, httpClient *http.Client, webhookURL string, message redis.XMessage, logger *slog.Logger) error {
-	if err := deliver(ctx, httpClient, webhookURL, message); err != nil {
+func handleMessage(ctx context.Context, client *redis.Client, httpClient *http.Client, webhookURL, webhookSecret string, message redis.XMessage, logger *slog.Logger) error {
+	if err := deliver(ctx, httpClient, webhookURL, webhookSecret, message); err != nil {
 		logger.Error("webhook delivery failed", "event_id", eventID(message), "error", err)
 		return err
 	}
@@ -148,17 +153,22 @@ func handleMessage(ctx context.Context, client *redis.Client, httpClient *http.C
 	return nil
 }
 
-func deliver(ctx context.Context, client *http.Client, webhookURL string, message redis.XMessage) error {
+func deliver(ctx context.Context, client *http.Client, webhookURL, webhookSecret string, message redis.XMessage) error {
 	payload, ok := message.Values["payload"].(string)
 	if !ok || payload == "" {
 		return errors.New("Redis message does not contain a JSON payload")
 	}
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, strings.NewReader(payload))
+	body := []byte(payload)
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, bytes.NewReader(body))
 	if err != nil {
 		return errors.New("could not create webhook request")
 	}
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CDC-Event-Id", eventID(message))
+	request.Header.Set("X-CDC-Timestamp", timestamp)
+	request.Header.Set("X-CDC-Signature", "v1="+sign(webhookSecret, timestamp, body))
 
 	response, err := client.Do(request)
 	if err != nil {
@@ -170,6 +180,14 @@ func deliver(ctx context.Context, client *http.Client, webhookURL string, messag
 		return fmt.Errorf("webhook returned HTTP %d", response.StatusCode)
 	}
 	return nil
+}
+
+func sign(secret, timestamp string, body []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(timestamp))
+	mac.Write([]byte("."))
+	mac.Write(body)
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func eventID(message redis.XMessage) string {

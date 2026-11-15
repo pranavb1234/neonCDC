@@ -54,7 +54,7 @@ You can override these names with `PUBLICATION_NAME` and `REPLICATION_SLOT`. Use
 
 ## Run the delivery worker
 
-Set `WEBHOOK_URL` in `.env` to an HTTP endpoint that accepts `POST` requests. The delivery worker consumes `cdc:events` through one Redis consumer group and acknowledges each message only after a successful 2xx webhook response.
+Set `WEBHOOK_URL` and `WEBHOOK_SECRET` in `.env`. The delivery worker signs each raw JSON payload as `timestamp + "." + body` with HMAC-SHA256 and only acknowledges Redis messages after a successful 2xx webhook response.
 
 For the included local receiver, open a separate PowerShell window:
 
@@ -63,7 +63,7 @@ Set-Location sample/receiver
 go run .
 ```
 
-It listens at the default `WEBHOOK_URL`, `http://localhost:8080/events`, prints each received JSON event, and returns HTTP 204.
+It listens at the default `WEBHOOK_URL`, `http://localhost:8080/webhook`, verifies the HMAC signature, prints the event ID and operation, and returns HTTP 200. Invalid or modified requests return HTTP 401.
 
 ```powershell
 Set-Location worker

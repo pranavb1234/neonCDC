@@ -17,9 +17,10 @@ type Config struct {
 }
 
 type DeliveryConfig struct {
-	RedisURL   string
-	WebhookURL string
-	RedisHost  string
+	RedisURL      string
+	WebhookURL    string
+	WebhookSecret string
+	RedisHost     string
 }
 
 func Load() (Config, error) {
@@ -67,11 +68,15 @@ func Load() (Config, error) {
 func LoadDelivery() (DeliveryConfig, error) {
 	redisURL := os.Getenv("REDIS_URL")
 	webhookURL := os.Getenv("WEBHOOK_URL")
+	webhookSecret := os.Getenv("WEBHOOK_SECRET")
 	if redisURL == "" {
 		return DeliveryConfig{}, errors.New("REDIS_URL is required")
 	}
 	if webhookURL == "" {
 		return DeliveryConfig{}, errors.New("WEBHOOK_URL is required")
+	}
+	if webhookSecret == "" {
+		return DeliveryConfig{}, errors.New("WEBHOOK_SECRET is required")
 	}
 
 	redis, err := url.Parse(redisURL)
@@ -83,7 +88,7 @@ func LoadDelivery() (DeliveryConfig, error) {
 		return DeliveryConfig{}, errors.New("WEBHOOK_URL must be an HTTP or HTTPS URL")
 	}
 
-	return DeliveryConfig{RedisURL: redisURL, WebhookURL: webhookURL, RedisHost: redis.Hostname()}, nil
+	return DeliveryConfig{RedisURL: redisURL, WebhookURL: webhookURL, WebhookSecret: webhookSecret, RedisHost: redis.Hostname()}, nil
 }
 
 func secureSSLMode(mode string) bool {
