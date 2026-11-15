@@ -5,7 +5,9 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -45,10 +47,39 @@ type event struct {
 
 func main() {
 	logger := logging.New()
+	if len(os.Args) > 1 && os.Args[1] == "admin-password" {
+		if err := resetAdminPassword(); err != nil {
+			logger.Error("administrator password update failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(logger); err != nil {
 		logger.Error("server stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+func resetAdminPassword() error {
+	flags := flag.NewFlagSet("admin-password", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	readStdin := flags.Bool("stdin", false, "read password from standard input")
+	if err := flags.Parse(os.Args[2:]); err != nil || !*readStdin {
+		return errors.New("use admin-password --stdin")
+	}
+	password, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return errors.New("could not read administrator password")
+	}
+	store, err := metadata.Open(context.Background(), metadata.Config{Path: envOrDefault("METADATA_DB_PATH", "/data/cdc-lite.db"), EncryptionKey: os.Getenv("APP_ENCRYPTION_KEY")})
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	if err := store.Migrate(context.Background()); err != nil {
+		return err
+	}
+	return store.UpdateAdministratorPassword(context.Background(), []byte(strings.TrimRight(string(password), "\r\n")))
 }
 
 func run(logger *slog.Logger) error {
@@ -94,20 +125,20 @@ func run(logger *slog.Logger) error {
 
 func bootstrapAdmin(ctx context.Context, store *metadata.Store) error {
 	email, password := os.Getenv("ADMIN_EMAIL"), os.Getenv("ADMIN_PASSWORD")
-	if email == "" && password == "" {
-		exists, err := store.HasAdministrator(ctx)
-		if err != nil {
-			return err
-		}
-		if !exists {
-			return errors.New("ADMIN_EMAIL and ADMIN_PASSWORD are required for the first startup")
-		}
+	exists, err := store.HasAdministrator(ctx)
+	if err != nil {
+		return err
+	}
+	if exists {
 		return nil
+	}
+	if email == "" && password == "" {
+		return errors.New("ADMIN_EMAIL and ADMIN_PASSWORD are required for the first startup")
 	}
 	if email == "" || password == "" {
 		return errors.New("ADMIN_EMAIL and ADMIN_PASSWORD must be set together")
 	}
-	_, err := store.BootstrapAdministrator(ctx, email, []byte(password))
+	_, err = store.BootstrapAdministrator(ctx, email, []byte(password))
 	return err
 }
 

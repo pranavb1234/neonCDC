@@ -12,7 +12,7 @@ services:
       retries: 5
 
   cdc-lite-server:
-    image: ${CDC_LITE_IMAGE:-ghcr.io/pranavb1234/cdc-lite:latest}
+    image: ${CDC_LITE_IMAGE:?Set CDC_LITE_IMAGE in .env to a published CDC Lite image}
     restart: unless-stopped
     depends_on:
       redis:
@@ -37,4 +37,6 @@ services:
 
 volumes:
   redis-data:
+    name: cdc-lite-redis-data
   cdc-lite-data:
+    name: cdc-lite-data

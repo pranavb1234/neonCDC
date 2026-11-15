@@ -134,6 +134,25 @@ func (s *Store) HasAdministrator(ctx context.Context) (bool, error) {
 	return exists, nil
 }
 
+func (s *Store) UpdateAdministratorPassword(ctx context.Context, password []byte) error {
+	if len(password) < 12 {
+		return errors.New("administrator password must be at least 12 characters")
+	}
+	hash, err := bcrypt.GenerateFromPassword(password, bcrypt.DefaultCost)
+	if err != nil {
+		return errors.New("could not hash administrator password")
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE administrators SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1`, hash)
+	if err != nil {
+		return errors.New("could not update administrator password")
+	}
+	changed, err := result.RowsAffected()
+	if err != nil || changed != 1 {
+		return errors.New("administrator has not been initialized")
+	}
+	return nil
+}
+
 func (s *Store) CreateSourceConnection(ctx context.Context, name, connectionURL string) (int64, error) {
 	if strings.TrimSpace(name) == "" || !postgresURL(connectionURL) {
 		return 0, errors.New("connection name and PostgreSQL connection URL are required")

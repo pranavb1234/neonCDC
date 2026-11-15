@@ -111,6 +111,32 @@ docker compose --profile tools run --rm metadata schema
 
 The metadata CLI is intentionally a one-shot tool in this step; it does not yet start CDC pipelines or provide the planned self-hosted UI.
 
+## Create a customer Docker Compose ZIP
+
+Build the customer server image from the repository root:
+
+```powershell
+docker build -t cdc-lite-server:local .
+```
+
+Before customers can use the ZIP, publish that image to a container registry and give them its exact image reference. The Compose package intentionally requires `CDC_LITE_IMAGE` instead of guessing a registry or image name.
+
+Create a ZIP containing only the Docker Compose package files:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\package-release.ps1 -Version 0.1.0
+```
+
+The command prints the ZIP path and SHA-256 checksum. Verify its contents:
+
+```powershell
+Expand-Archive -LiteralPath .\dist\CDC-Lite-Docker-Compose-0.1.0.zip -DestinationPath .\dist\verify -Force
+Get-ChildItem -Recurse -File .\dist\verify
+Get-FileHash -Algorithm SHA256 .\dist\CDC-Lite-Docker-Compose-0.1.0.zip
+```
+
+The ZIP contains only `docker-compose.yml`, `.env.example`, and `README.md` inside its top-level release folder.
+
 ## Run Redis
 
 ```sh
