@@ -81,7 +81,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:3000`. The dashboard polls Redis every two seconds; it is a local demo and does not require login.
+Open `http://localhost:3000`. The Live Events page receives new Redis Stream entries over Server-Sent Events; it is a local demo and does not require login.
 
 ## Run Redis
 
