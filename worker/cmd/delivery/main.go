@@ -67,6 +67,10 @@ func ensureConsumerGroup(ctx context.Context, client *redis.Client) error {
 }
 
 func consume(ctx context.Context, client *redis.Client, httpClient *http.Client, webhookURL string, logger *slog.Logger) error {
+	if err := consumePending(ctx, client, httpClient, webhookURL, logger); err != nil {
+		return err
+	}
+
 	for {
 		streams, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
 			Group:    consumerGroup,
@@ -87,18 +91,49 @@ func consume(ctx context.Context, client *redis.Client, httpClient *http.Client,
 
 		for _, stream := range streams {
 			for _, message := range stream.Messages {
-				if err := deliver(ctx, httpClient, webhookURL, message); err != nil {
-					logger.Error("webhook delivery failed", "event_id", eventID(message), "error", err)
-					continue
+				if err := handleMessage(ctx, client, httpClient, webhookURL, message, logger); err != nil {
+					return err
 				}
-				if err := client.XAck(ctx, rediscache.StreamName, consumerGroup, message.ID).Err(); err != nil {
-					logger.Error("Redis message acknowledgement failed", "event_id", eventID(message), "error", err)
-					continue
-				}
-				logger.Info("webhook delivered", "event_id", eventID(message))
 			}
 		}
 	}
+}
+
+func consumePending(ctx context.Context, client *redis.Client, httpClient *http.Client, webhookURL string, logger *slog.Logger) error {
+	for {
+		streams, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
+			Group:    consumerGroup,
+			Consumer: consumerName,
+			Streams:  []string{rediscache.StreamName, "0"},
+			Count:    1,
+		}).Result()
+		if errors.Is(err, redis.Nil) {
+			return nil
+		}
+		if err != nil {
+			return errors.New("could not read pending Redis Stream messages")
+		}
+		for _, stream := range streams {
+			for _, message := range stream.Messages {
+				if err := handleMessage(ctx, client, httpClient, webhookURL, message, logger); err != nil {
+					return err
+				}
+			}
+		}
+	}
+}
+
+func handleMessage(ctx context.Context, client *redis.Client, httpClient *http.Client, webhookURL string, message redis.XMessage, logger *slog.Logger) error {
+	if err := deliver(ctx, httpClient, webhookURL, message); err != nil {
+		logger.Error("webhook delivery failed", "event_id", eventID(message), "error", err)
+		return err
+	}
+	if err := client.XAck(ctx, rediscache.StreamName, consumerGroup, message.ID).Err(); err != nil {
+		logger.Error("Redis message acknowledgement failed", "event_id", eventID(message), "error", err)
+		return err
+	}
+	logger.Info("webhook delivered", "event_id", eventID(message))
+	return nil
 }
 
 func deliver(ctx context.Context, client *http.Client, webhookURL string, message redis.XMessage) error {

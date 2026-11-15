@@ -56,6 +56,15 @@ You can override these names with `PUBLICATION_NAME` and `REPLICATION_SLOT`. Use
 
 Set `WEBHOOK_URL` in `.env` to an HTTP endpoint that accepts `POST` requests. The delivery worker consumes `cdc:events` through one Redis consumer group and acknowledges each message only after a successful 2xx webhook response.
 
+For the included local receiver, open a separate PowerShell window:
+
+```powershell
+Set-Location sample/receiver
+go run .
+```
+
+It listens at the default `WEBHOOK_URL`, `http://localhost:8080/events`, prints each received JSON event, and returns HTTP 204.
+
 ```powershell
 Set-Location worker
 go run ./cmd/delivery
