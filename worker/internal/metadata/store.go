@@ -126,6 +126,14 @@ func (s *Store) BootstrapAdministrator(ctx context.Context, email string, passwo
 	return created == 1, err
 }
 
+func (s *Store) HasAdministrator(ctx context.Context) (bool, error) {
+	var exists bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM administrators)`).Scan(&exists); err != nil {
+		return false, errors.New("could not read administrator")
+	}
+	return exists, nil
+}
+
 func (s *Store) CreateSourceConnection(ctx context.Context, name, connectionURL string) (int64, error) {
 	if strings.TrimSpace(name) == "" || !postgresURL(connectionURL) {
 		return 0, errors.New("connection name and PostgreSQL connection URL are required")
