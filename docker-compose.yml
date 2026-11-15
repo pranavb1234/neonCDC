@@ -7,5 +7,17 @@ services:
     volumes:
       - redis-data:/data
 
+  metadata:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: worker/Dockerfile.metadata
+    environment:
+      METADATA_DB_PATH: /data/cdc-lite.db
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-}
+    volumes:
+      - cdc-lite-data:/data
+
 volumes:
   redis-data:
+  cdc-lite-data:

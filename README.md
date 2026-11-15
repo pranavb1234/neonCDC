@@ -83,6 +83,34 @@ npm run dev
 
 Open `http://localhost:3000`. The Live Events page receives new Redis Stream entries over Server-Sent Events; it is a local demo and does not require login.
 
+## Initialize self-hosted metadata
+
+The future self-hosted server stores its administrator, saved connection metadata, pipelines, sinks, and delivery history in SQLite. The database is stored in the `cdc-lite-data` Docker volume; Redis remains the event buffer.
+
+Copy the `APP_ENCRYPTION_KEY` placeholder from `metadata.env.example` into your local `.env`, replacing it with a base64-encoded random 32-byte key. Do not change this key after saving connections or sink secrets, because existing encrypted values would become unreadable.
+
+Initialize the schema and the one administrator without putting the password on the command line:
+
+```powershell
+$securePassword = Read-Host "Administrator password" -AsSecureString
+$pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
+try {
+  [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer) | docker compose --profile tools run --rm -T metadata init --admin-email admin@example.com --admin-password-stdin
+} finally {
+  [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
+  Remove-Variable securePassword
+}
+```
+
+To apply migrations later or inspect the persisted schema:
+
+```powershell
+docker compose --profile tools run --rm metadata migrate
+docker compose --profile tools run --rm metadata schema
+```
+
+The metadata CLI is intentionally a one-shot tool in this step; it does not yet start CDC pipelines or provide the planned self-hosted UI.
+
 ## Run Redis
 
 ```sh
