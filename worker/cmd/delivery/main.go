@@ -113,7 +113,7 @@ func consumePending(ctx context.Context, client *redis.Client, httpClient *http.
 		if err != nil {
 			return errors.New("could not read pending Redis Stream messages")
 		}
-		if len(streams) == 0 {
+		if !hasMessages(streams) {
 			return nil
 		}
 		for _, stream := range streams {
@@ -124,6 +124,15 @@ func consumePending(ctx context.Context, client *redis.Client, httpClient *http.
 			}
 		}
 	}
+}
+
+func hasMessages(streams []redis.XStream) bool {
+	for _, stream := range streams {
+		if len(stream.Messages) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func handleMessage(ctx context.Context, client *redis.Client, httpClient *http.Client, webhookURL string, message redis.XMessage, logger *slog.Logger) error {
