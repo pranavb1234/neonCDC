@@ -16,6 +16,12 @@ type Config struct {
 	RedisHost       string
 }
 
+type DeliveryConfig struct {
+	RedisURL   string
+	WebhookURL string
+	RedisHost  string
+}
+
 func Load() (Config, error) {
 	sourceDBURL := os.Getenv("SOURCE_DB_URL")
 	redisURL := os.Getenv("REDIS_URL")
@@ -56,6 +62,28 @@ func Load() (Config, error) {
 		PostgresHost:    source.Hostname(),
 		RedisHost:       redis.Hostname(),
 	}, nil
+}
+
+func LoadDelivery() (DeliveryConfig, error) {
+	redisURL := os.Getenv("REDIS_URL")
+	webhookURL := os.Getenv("WEBHOOK_URL")
+	if redisURL == "" {
+		return DeliveryConfig{}, errors.New("REDIS_URL is required")
+	}
+	if webhookURL == "" {
+		return DeliveryConfig{}, errors.New("WEBHOOK_URL is required")
+	}
+
+	redis, err := url.Parse(redisURL)
+	if err != nil || (redis.Scheme != "redis" && redis.Scheme != "rediss") || redis.Hostname() == "" {
+		return DeliveryConfig{}, errors.New("REDIS_URL must be a Redis connection URL")
+	}
+	webhook, err := url.Parse(webhookURL)
+	if err != nil || (webhook.Scheme != "http" && webhook.Scheme != "https") || webhook.Hostname() == "" {
+		return DeliveryConfig{}, errors.New("WEBHOOK_URL must be an HTTP or HTTPS URL")
+	}
+
+	return DeliveryConfig{RedisURL: redisURL, WebhookURL: webhookURL, RedisHost: redis.Hostname()}, nil
 }
 
 func secureSSLMode(mode string) bool {
