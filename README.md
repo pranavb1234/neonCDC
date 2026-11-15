@@ -70,6 +70,19 @@ Set-Location worker
 go run ./cmd/delivery
 ```
 
+## Run the dashboard
+
+The dashboard reads the same local Redis stream and can send a signed webhook test. Create `web/.env.local` with only the dashboard values from your root `.env`:
+
+```powershell
+Get-Content .env | Where-Object { $_ -match '^(REDIS_URL|WEBHOOK_URL|WEBHOOK_SECRET)=' } | Set-Content web/.env.local
+Set-Location web
+npm install
+npm run dev
+```
+
+Open `http://localhost:3000`. The dashboard polls Redis every two seconds; it is a local demo and does not require login.
+
 ## Run Redis
 
 ```sh

@@ -1,4 +1,6 @@
 .env
+web/.env.local
 web/node_modules/
 web/.next/
+web/tsconfig.tsbuildinfo
 worker/bin/
