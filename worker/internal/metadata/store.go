@@ -50,6 +50,16 @@ type SchemaObject struct {
 	Name string
 }
 
+type SourceConnection struct {
+	ID           int64   `json:"id"`
+	Name         string  `json:"name"`
+	Status       string  `json:"status"`
+	LastTestedAt *string `json:"last_tested_at,omitempty"`
+	LastError    *string `json:"last_error,omitempty"`
+	CreatedAt    string  `json:"created_at"`
+	UpdatedAt    string  `json:"updated_at"`
+}
+
 func Open(ctx context.Context, cfg Config) (*Store, error) {
 	if strings.TrimSpace(cfg.Path) == "" {
 		return nil, errors.New("METADATA_DB_PATH is required")
@@ -154,7 +164,7 @@ func (s *Store) UpdateAdministratorPassword(ctx context.Context, password []byte
 }
 
 func (s *Store) CreateSourceConnection(ctx context.Context, name, connectionURL string) (int64, error) {
-	if strings.TrimSpace(name) == "" || !postgresURL(connectionURL) {
+	if strings.TrimSpace(name) == "" || strings.TrimSpace(connectionURL) == "" {
 		return 0, errors.New("connection name and PostgreSQL connection URL are required")
 	}
 	ciphertext, err := s.encryptor.encrypt(connectionURL)
@@ -166,6 +176,83 @@ func (s *Store) CreateSourceConnection(ctx context.Context, name, connectionURL 
 		return 0, errors.New("could not save source connection")
 	}
 	return result.LastInsertId()
+}
+
+func (s *Store) SourceConnectionURL(ctx context.Context, id int64) (string, error) {
+	var ciphertext []byte
+	if err := s.db.QueryRowContext(ctx, `SELECT connection_url_ciphertext FROM source_connections WHERE id = ?`, id).Scan(&ciphertext); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", errors.New("database connection was not found")
+		}
+		return "", errors.New("could not read database connection")
+	}
+	return s.encryptor.decrypt(ciphertext)
+}
+
+func (s *Store) ListSourceConnections(ctx context.Context) ([]SourceConnection, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, status, last_tested_at, last_error, created_at, updated_at FROM source_connections ORDER BY name`)
+	if err != nil {
+		return nil, errors.New("could not list database connections")
+	}
+	defer rows.Close()
+	connections := []SourceConnection{}
+	for rows.Next() {
+		var item SourceConnection
+		if err := rows.Scan(&item.ID, &item.Name, &item.Status, &item.LastTestedAt, &item.LastError, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, errors.New("could not read database connection")
+		}
+		connections = append(connections, item)
+	}
+	return connections, rows.Err()
+}
+
+func (s *Store) RenameSourceConnection(ctx context.Context, id int64, name string) error {
+	if id <= 0 || strings.TrimSpace(name) == "" {
+		return errors.New("database display name is required")
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE source_connections SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, strings.TrimSpace(name), id)
+	if err != nil {
+		return errors.New("could not update database display name")
+	}
+	changed, err := result.RowsAffected()
+	if err != nil || changed != 1 {
+		return errors.New("database connection was not found")
+	}
+	return nil
+}
+
+func (s *Store) SetSourceConnectionTest(ctx context.Context, id int64, status string, lastError string) error {
+	if status != "healthy" && status != "failed" {
+		return errors.New("invalid database connection status")
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE source_connections SET status = ?, last_tested_at = CURRENT_TIMESTAMP, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, status, nullableString(lastError), id)
+	if err != nil {
+		return errors.New("could not save database test status")
+	}
+	changed, err := result.RowsAffected()
+	if err != nil || changed != 1 {
+		return errors.New("database connection was not found")
+	}
+	return nil
+}
+
+func (s *Store) DeleteSourceConnection(ctx context.Context, id int64) error {
+	var dependencies int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pipelines WHERE source_connection_id = ?`, id).Scan(&dependencies); err != nil {
+		return errors.New("could not check database dependencies")
+	}
+	if dependencies > 0 {
+		return errors.New("database connection has pipelines and cannot be deleted")
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM source_connections WHERE id = ?`, id)
+	if err != nil {
+		return errors.New("could not delete database connection")
+	}
+	changed, err := result.RowsAffected()
+	if err != nil || changed != 1 {
+		return errors.New("database connection was not found")
+	}
+	return nil
 }
 
 func (s *Store) CreatePipeline(ctx context.Context, name string, sourceConnectionID int64, publicationName, slotName string, tables []PipelineTable) (int64, error) {

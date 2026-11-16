@@ -111,6 +111,14 @@ docker compose --profile tools run --rm metadata schema
 
 The metadata CLI is intentionally a one-shot tool in this step; it does not yet start CDC pipelines or provide the planned self-hosted UI.
 
+## Manage saved PostgreSQL databases
+
+In the packaged server console, open **Databases** and add a display name plus a PostgreSQL connection string. CDC Lite tests ordinary SQL connectivity and then checks `wal_level=logical` and the current role's `REPLICATION` permission separately. A successful SQL login alone is not treated as CDC-ready.
+
+For remote sources, provide `sslmode=require`, `sslmode=verify-ca`, or `sslmode=verify-full`. Use a direct, non-pooled endpoint for logical replication. The connection string is encrypted with `APP_ENCRYPTION_KEY` before it is stored, is never returned by the API, and is not logged. Keep that key stable across restarts and restore it with the metadata volume backup; otherwise saved connections cannot be decrypted.
+
+Saving a database never starts a CDC pipeline automatically.
+
 ## Create a customer Docker Compose ZIP
 
 Build the customer server image from the repository root:
