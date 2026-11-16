@@ -302,21 +302,30 @@ func (s *Store) ListPipelines(ctx context.Context, sourceConnectionID int64) ([]
 	if err != nil {
 		return nil, errors.New("could not list pipelines")
 	}
-	defer rows.Close()
 	items := []Pipeline{}
 	for rows.Next() {
 		var item Pipeline
 		if err := rows.Scan(&item.ID, &item.Name, &item.SourceConnectionID, &item.PublicationName, &item.SlotName, &item.Status, &item.LastError); err != nil {
 			return nil, errors.New("could not read pipeline")
 		}
-		tables, err := s.pipelineTables(ctx, item.ID)
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, errors.New("could not finish listing pipelines")
+	}
+	// SQLite uses a single connection in this small installation. Finish the
+	// pipeline query before querying each pipeline's table selection.
+	for index := range items {
+		tables, err := s.pipelineTables(ctx, items[index].ID)
 		if err != nil {
 			return nil, err
 		}
-		item.Tables = tables
-		items = append(items, item)
+		items[index].Tables = tables
 	}
-	return items, rows.Err()
+	return items, nil
 }
 
 func (s *Store) Pipeline(ctx context.Context, id int64) (Pipeline, error) {
