@@ -127,6 +127,14 @@ From a saved database's **Browse** screen, select a schema and one or more table
 
 The first customer release supports **one active pipeline per CDC Lite installation**. Additional pipelines may be saved but must remain stopped until the active one is stopped. Stopping a pipeline preserves its publication and slot for a restart. Delete is available only after a pipeline is stopped, then removes only that pipeline's deterministically named publication and slot.
 
+## Add a Webhook sink
+
+Open **Sinks**, select **Create Sink**, choose the source pipeline, then enter an HTTPS webhook URL. You may enter a signing secret or leave it blank for CDC Lite to generate one. A generated secret is shown only once; save it in the receiving application before closing the message. Secrets are encrypted in the metadata volume and are never returned in the sink list.
+
+Each sink receives events from its selected pipeline only. CDC Lite sends the exact JSON event body with `X-CDC-Event-Id`, `X-CDC-Timestamp`, and `X-CDC-Signature: v1=<HMAC-SHA256>` headers. Redirects and loopback, private, link-local, and cloud-metadata destinations are blocked; hostnames are checked again immediately before connection.
+
+Delivery is sequential. A failed request remains pending in Redis and is retried after a short delay; there is no retry schedule or dead-letter queue in this first release. Duplicate webhook deliveries remain possible.
+
 ## Create a customer Docker Compose ZIP
 
 Build the customer server image from the repository root:

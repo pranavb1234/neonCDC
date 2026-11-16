@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -16,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -88,6 +93,13 @@ type pipelineManager struct {
 	mu      sync.Mutex
 	running map[int64]context.CancelFunc
 }
+type sinkInput struct {
+	Name          string `json:"name"`
+	PipelineID    int64  `json:"pipeline_id"`
+	WebhookURL    string `json:"webhook_url"`
+	SigningSecret string `json:"signing_secret"`
+	Enabled       bool   `json:"enabled"`
+}
 
 func main() {
 	logger := logging.New()
@@ -138,6 +150,9 @@ func run(logger *slog.Logger) error {
 	if err := store.Migrate(ctx); err != nil {
 		return err
 	}
+	if err := store.MarkInterruptedPipelinesStopped(ctx); err != nil {
+		return err
+	}
 	if err := bootstrapAdmin(ctx, store); err != nil {
 		return err
 	}
@@ -153,6 +168,7 @@ func run(logger *slog.Logger) error {
 	}
 
 	application := &app{store: store, redis: client, logger: logger, jobs: &pipelineManager{running: map[int64]context.CancelFunc{}}}
+	go application.deliveryLoop(ctx)
 	server := &http.Server{Addr: ":" + envOrDefault("PORT", "3000"), Handler: application.routes(), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()
@@ -207,6 +223,9 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/pipelines/{id}/start", a.startPipeline)
 	mux.HandleFunc("POST /api/pipelines/{id}/stop", a.stopPipeline)
 	mux.HandleFunc("DELETE /api/pipelines/{id}", a.deletePipeline)
+	mux.HandleFunc("GET /api/sinks", a.listSinks)
+	mux.HandleFunc("POST /api/sinks", a.createSink)
+	mux.HandleFunc("PATCH /api/sinks/{id}/enabled", a.setSinkEnabled)
 	return a.static(mux)
 }
 
@@ -360,10 +379,7 @@ func (a *app) stopPipeline(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid pipeline id"})
 		return
 	}
-	if !a.jobs.stop(id) {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "Pipeline is not running."})
-		return
-	}
+	a.jobs.stop(id)
 	if err := a.store.SetPipelineStatus(r.Context(), id, "stopped", ""); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Could not update pipeline status."})
 		return
@@ -400,6 +416,223 @@ func (a *app) deletePipeline(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (a *app) listSinks(w http.ResponseWriter, r *http.Request) {
+	sinks, err := a.store.ListSinks(r.Context())
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "Could not list sinks"})
+		return
+	}
+	pipelines, _ := a.store.ListAllPipelines(r.Context())
+	writeJSON(w, 200, map[string]any{"sinks": sinks, "pipelines": pipelines})
+}
+func (a *app) createSink(w http.ResponseWriter, r *http.Request) {
+	input, err := decodeJSON[sinkInput](r)
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"error": "Enter webhook sink details."})
+		return
+	}
+	if strings.TrimSpace(input.Name) == "" {
+		writeJSON(w, 400, map[string]string{"error": "Enter a sink name."})
+		return
+	}
+	if err := validateWebhookURL(r.Context(), input.WebhookURL); err != nil {
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
+	if _, err := a.store.Pipeline(r.Context(), input.PipelineID); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "Choose a saved pipeline."})
+		return
+	}
+	secret := input.SigningSecret
+	if secret == "" {
+		secret, err = randomSecret()
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": "Could not generate signing secret."})
+			return
+		}
+	}
+	id, err := a.store.CreateWebhookSink(r.Context(), input.PipelineID, input.Name, input.WebhookURL, secret)
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"error": "Could not save sink."})
+		return
+	}
+	if !input.Enabled {
+		_ = a.store.SetSinkEnabled(r.Context(), id, false)
+	}
+	writeJSON(w, 201, map[string]any{"id": id, "message": "Webhook sink created. Its signing secret will not be shown again.", "generated_secret": func() string {
+		if input.SigningSecret == "" {
+			return secret
+		}
+		return ""
+	}()})
+}
+func (a *app) setSinkEnabled(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"error": "Invalid sink id"})
+		return
+	}
+	input, err := decodeJSON[struct {
+		Enabled bool `json:"enabled"`
+	}](r)
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"error": "Invalid sink state"})
+		return
+	}
+	if err := a.store.SetSinkEnabled(r.Context(), id, input.Enabled); err != nil {
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]string{"message": "Sink updated"})
+}
+
+func randomSecret() (string, error) {
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(bytes), nil
+}
+func validateWebhookURL(ctx context.Context, value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil {
+		return errors.New("Webhook URL must be an HTTP or HTTPS URL")
+	}
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, parsed.Hostname())
+	if err != nil || len(ips) == 0 {
+		return errors.New("Webhook hostname could not be resolved")
+	}
+	for _, item := range ips {
+		if !publicIP(item.IP) {
+			return errors.New("Webhook URL cannot target loopback, private, link-local, or metadata addresses")
+		}
+	}
+	return nil
+}
+func publicIP(ip net.IP) bool {
+	return !(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast())
+}
+
+// webhookHTTPClient resolves the hostname immediately before dialing and only
+// dials a validated public address. This prevents a hostname from resolving to
+// a public IP during validation and then rebinding to a private address later.
+func webhookHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = safeWebhookDial
+	return &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: transport,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return errors.New("webhook redirects are not allowed")
+		},
+	}
+}
+
+func safeWebhookDial(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil || len(ips) == 0 {
+		return nil, errors.New("webhook hostname could not be resolved")
+	}
+	for _, item := range ips {
+		if !publicIP(item.IP) {
+			return nil, errors.New("webhook resolved to a blocked address")
+		}
+	}
+	dialer := net.Dialer{Timeout: 10 * time.Second}
+	var lastErr error
+	for _, item := range ips {
+		connection, err := dialer.DialContext(ctx, network, net.JoinHostPort(item.IP.String(), port))
+		if err == nil {
+			return connection, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+func (a *app) deliveryLoop(ctx context.Context) {
+	group, consumer := "server-delivery", "server-1"
+	_ = a.redis.XGroupCreateMkStream(ctx, streamName, group, "0").Err()
+	client := webhookHTTPClient()
+	for ctx.Err() == nil {
+		// Retry this consumer's pending message before reading a fresh entry.
+		streams, err := a.redis.XReadGroup(ctx, &redis.XReadGroupArgs{Group: group, Consumer: consumer, Streams: []string{streamName, "0"}, Count: 1}).Result()
+		if err == redis.Nil || len(streams) == 0 {
+			streams, err = a.redis.XReadGroup(ctx, &redis.XReadGroupArgs{Group: group, Consumer: consumer, Streams: []string{streamName, ">"}, Count: 1, Block: time.Second}).Result()
+		}
+		if err != nil {
+			continue
+		}
+		for _, stream := range streams {
+			for _, message := range stream.Messages {
+				pipelineID, err := strconv.ParseInt(fmt.Sprint(message.Values["pipeline_id"]), 10, 64)
+				if err != nil || pipelineID <= 0 {
+					_ = a.redis.XAck(ctx, streamName, group, message.ID).Err()
+					continue
+				}
+				sinks, _ := a.store.EnabledSinksForPipeline(ctx, pipelineID)
+				payload, ok := message.Values["payload"].(string)
+				if !ok {
+					continue
+				}
+				delivered := true
+				for _, sink := range sinks {
+					if err := a.deliverWebhook(ctx, client, sink, []byte(payload), fmt.Sprint(message.Values["event_id"])); err != nil {
+						delivered = false
+						_ = a.store.RecordDeliveryAttempt(ctx, metadata.DeliveryAttempt{PipelineID: pipelineID, SinkID: sink.ID, EventID: fmt.Sprint(message.Values["event_id"]), RedisStreamID: message.ID, Status: "failed", Error: err})
+					} else {
+						_ = a.store.RecordDeliveryAttempt(ctx, metadata.DeliveryAttempt{PipelineID: pipelineID, SinkID: sink.ID, EventID: fmt.Sprint(message.Values["event_id"]), RedisStreamID: message.ID, Status: "success"})
+					}
+				}
+				if delivered {
+					_ = a.redis.XAck(ctx, streamName, group, message.ID).Err()
+				} else {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(time.Second):
+					}
+				}
+			}
+		}
+	}
+}
+func (a *app) deliverWebhook(ctx context.Context, client *http.Client, sink metadata.Sink, body []byte, eventID string) error {
+	if err := validateWebhookURL(ctx, sink.WebhookURL); err != nil {
+		return err
+	}
+	secret, err := a.store.WebhookSigningSecret(ctx, sink.ID)
+	if err != nil {
+		return err
+	}
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(timestamp + "."))
+	mac.Write(body)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, sink.WebhookURL, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CDC-Event-Id", eventID)
+	request.Header.Set("X-CDC-Timestamp", timestamp)
+	request.Header.Set("X-CDC-Signature", "v1="+hex.EncodeToString(mac.Sum(nil)))
+	response, err := client.Do(request)
+	if err != nil {
+		return errors.New("webhook request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("webhook returned HTTP %d", response.StatusCode)
+	}
+	return nil
+}
+
 func (a *app) launchPipeline(id int64) error {
 	a.jobs.mu.Lock()
 	defer a.jobs.mu.Unlock()
@@ -433,7 +666,7 @@ func (a *app) launchPipeline(id int64) error {
 			return
 		}
 		defer db.Close(context.Background())
-		publisher := rediscache.NewStreamPublisher(a.redis)
+		publisher := rediscache.NewPipelineStreamPublisher(a.redis, pipeline.ID)
 		_ = a.store.SetPipelineStatus(context.Background(), id, "running", "")
 		tables := make([]replication.Table, 0, len(pipeline.Tables))
 		for _, table := range pipeline.Tables {
@@ -828,7 +1061,7 @@ func (a *app) overview(w http.ResponseWriter, r *http.Request) {
 	groups, _ := a.redis.XInfoGroups(ctx, streamName).Result()
 	var pending, consumers int64
 	for _, group := range groups {
-		if group.Name == "delivery" {
+		if group.Name == "server-delivery" {
 			pending, consumers = group.Pending, group.Consumers
 		}
 	}

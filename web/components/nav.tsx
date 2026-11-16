@@ -1,9 +1,10 @@
 import Link from "next/link";
-import { Activity, Database, Radio, Settings } from "lucide-react";
+import { Activity, Database, Radio, Settings, Send } from "lucide-react";
 
 const links = [
   { href: "/", label: "Overview", icon: Activity },
   { href: "/databases", label: "Databases", icon: Database },
+  { href: "/sinks", label: "Sinks", icon: Send },
   { href: "/events", label: "Live Events", icon: Radio },
   { href: "/webhook", label: "Webhook Settings", icon: Settings }
 ];

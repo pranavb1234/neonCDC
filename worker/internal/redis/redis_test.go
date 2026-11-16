@@ -20,11 +20,14 @@ func TestStreamValuesContainEventMetadataAndJSONPayload(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	values := streamValues(event, payload)
+	values := streamValues(event, payload, 7)
 	if values["event_id"] != event.ID || values["table"] != "users" || values["operation"] != "update" || values["commit_lsn"] != event.CommitLSN {
 		t.Fatalf("unexpected stream values: %#v", values)
 	}
 	if values["payload"] != string(payload) {
 		t.Fatalf("payload = %#v", values["payload"])
+	}
+	if values["pipeline_id"] != int64(7) {
+		t.Fatalf("pipeline_id = %#v", values["pipeline_id"])
 	}
 }

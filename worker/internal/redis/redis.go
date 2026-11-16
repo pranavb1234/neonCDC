@@ -12,11 +12,16 @@ import (
 const StreamName = "cdc:events"
 
 type StreamPublisher struct {
-	client *redis.Client
+	client     *redis.Client
+	pipelineID int64
 }
 
 func NewStreamPublisher(client *redis.Client) *StreamPublisher {
 	return &StreamPublisher{client: client}
+}
+
+func NewPipelineStreamPublisher(client *redis.Client, pipelineID int64) *StreamPublisher {
+	return &StreamPublisher{client: client, pipelineID: pipelineID}
 }
 
 func Connect(ctx context.Context, redisURL string) (*redis.Client, error) {
@@ -47,7 +52,7 @@ func (p *StreamPublisher) Publish(ctx context.Context, events []replication.Even
 		}
 		pipeline.XAdd(ctx, &redis.XAddArgs{
 			Stream: StreamName,
-			Values: streamValues(event, payload),
+			Values: streamValues(event, payload, p.pipelineID),
 		})
 	}
 
@@ -57,12 +62,13 @@ func (p *StreamPublisher) Publish(ctx context.Context, events []replication.Even
 	return nil
 }
 
-func streamValues(event replication.Event, payload []byte) map[string]any {
+func streamValues(event replication.Event, payload []byte, pipelineID int64) map[string]any {
 	return map[string]any{
-		"event_id":   event.ID,
-		"table":      event.Table,
-		"operation":  event.Operation,
-		"commit_lsn": event.CommitLSN,
-		"payload":    string(payload),
+		"event_id":    event.ID,
+		"table":       event.Table,
+		"operation":   event.Operation,
+		"commit_lsn":  event.CommitLSN,
+		"payload":     string(payload),
+		"pipeline_id": pipelineID,
 	}
 }

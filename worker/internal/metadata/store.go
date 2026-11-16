@@ -46,6 +46,19 @@ type Pipeline struct {
 	Tables             []PipelineTable `json:"tables"`
 }
 
+type Sink struct {
+	ID                 int64   `json:"id"`
+	PipelineID         int64   `json:"pipeline_id"`
+	PipelineName       string  `json:"pipeline_name,omitempty"`
+	Name               string  `json:"name"`
+	Type               string  `json:"type"`
+	WebhookURL         string  `json:"webhook_url"`
+	Enabled            bool    `json:"enabled"`
+	LastDeliveryStatus *string `json:"last_delivery_status,omitempty"`
+	LastDeliveryAt     *string `json:"last_delivery_at,omitempty"`
+	LastError          *string `json:"last_error,omitempty"`
+}
+
 type DeliveryAttempt struct {
 	PipelineID    int64
 	SinkID        int64
@@ -328,6 +341,43 @@ func (s *Store) ListPipelines(ctx context.Context, sourceConnectionID int64) ([]
 	return items, nil
 }
 
+func (s *Store) ListAllPipelines(ctx context.Context) ([]Pipeline, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, source_connection_id, publication_name, slot_name, status, last_error FROM pipelines ORDER BY name`)
+	if err != nil {
+		return nil, errors.New("could not list pipelines")
+	}
+	items := []Pipeline{}
+	for rows.Next() {
+		var item Pipeline
+		if err := rows.Scan(&item.ID, &item.Name, &item.SourceConnectionID, &item.PublicationName, &item.SlotName, &item.Status, &item.LastError); err != nil {
+			rows.Close()
+			return nil, errors.New("could not read pipeline")
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	for index := range items {
+		tables, err := s.pipelineTables(ctx, items[index].ID)
+		if err != nil {
+			return nil, err
+		}
+		items[index].Tables = tables
+	}
+	return items, nil
+}
+
+func (s *Store) MarkInterruptedPipelinesStopped(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE pipelines SET status = 'stopped', last_error = 'Stopped because CDC Lite restarted.', updated_at = CURRENT_TIMESTAMP WHERE status IN ('running', 'starting')`)
+	if err != nil {
+		return errors.New("could not recover pipeline statuses")
+	}
+	return nil
+}
+
 func (s *Store) Pipeline(ctx context.Context, id int64) (Pipeline, error) {
 	var item Pipeline
 	err := s.db.QueryRowContext(ctx, `SELECT id, name, source_connection_id, publication_name, slot_name, status, last_error FROM pipelines WHERE id = ?`, id).Scan(&item.ID, &item.Name, &item.SourceConnectionID, &item.PublicationName, &item.SlotName, &item.Status, &item.LastError)
@@ -407,6 +457,60 @@ func (s *Store) CreateWebhookSink(ctx context.Context, pipelineID int64, name, w
 		return 0, errors.New("could not save webhook sink")
 	}
 	return result.LastInsertId()
+}
+
+func (s *Store) ListSinks(ctx context.Context) ([]Sink, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT s.id, s.pipeline_id, p.name, s.name, s.type, s.webhook_url, s.enabled, s.last_delivery_status, s.last_delivery_at, s.last_error FROM sinks s JOIN pipelines p ON p.id = s.pipeline_id ORDER BY s.name`)
+	if err != nil {
+		return nil, errors.New("could not list sinks")
+	}
+	defer rows.Close()
+	sinks := []Sink{}
+	for rows.Next() {
+		var item Sink
+		if err := rows.Scan(&item.ID, &item.PipelineID, &item.PipelineName, &item.Name, &item.Type, &item.WebhookURL, &item.Enabled, &item.LastDeliveryStatus, &item.LastDeliveryAt, &item.LastError); err != nil {
+			return nil, errors.New("could not read sink")
+		}
+		sinks = append(sinks, item)
+	}
+	return sinks, rows.Err()
+}
+
+func (s *Store) EnabledSinksForPipeline(ctx context.Context, pipelineID int64) ([]Sink, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, pipeline_id, name, type, webhook_url, enabled, last_delivery_status, last_delivery_at, last_error FROM sinks WHERE pipeline_id = ? AND enabled = 1 ORDER BY id`, pipelineID)
+	if err != nil {
+		return nil, errors.New("could not list pipeline sinks")
+	}
+	defer rows.Close()
+	sinks := []Sink{}
+	for rows.Next() {
+		var item Sink
+		if err := rows.Scan(&item.ID, &item.PipelineID, &item.Name, &item.Type, &item.WebhookURL, &item.Enabled, &item.LastDeliveryStatus, &item.LastDeliveryAt, &item.LastError); err != nil {
+			return nil, errors.New("could not read sink")
+		}
+		sinks = append(sinks, item)
+	}
+	return sinks, rows.Err()
+}
+
+func (s *Store) WebhookSigningSecret(ctx context.Context, sinkID int64) (string, error) {
+	var ciphertext []byte
+	if err := s.db.QueryRowContext(ctx, `SELECT signing_secret_ciphertext FROM sinks WHERE id = ?`, sinkID).Scan(&ciphertext); err != nil {
+		return "", errors.New("could not read sink secret")
+	}
+	return s.encryptor.decrypt(ciphertext)
+}
+
+func (s *Store) SetSinkEnabled(ctx context.Context, sinkID int64, enabled bool) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE sinks SET enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, enabled, sinkID)
+	if err != nil {
+		return errors.New("could not update sink")
+	}
+	changed, err := result.RowsAffected()
+	if err != nil || changed != 1 {
+		return errors.New("sink was not found")
+	}
+	return nil
 }
 
 func (s *Store) RecordDeliveryAttempt(ctx context.Context, attempt DeliveryAttempt) error {
