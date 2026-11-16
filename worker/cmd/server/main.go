@@ -610,12 +610,16 @@ func (a *app) deliveryLoop(ctx context.Context) {
 	_ = a.redis.XGroupCreateMkStream(ctx, streamName, group, "0").Err()
 	client := webhookHTTPClient()
 	for ctx.Err() == nil {
-		// Retry this consumer's pending message before reading a fresh entry.
-		streams, err := a.redis.XReadGroup(ctx, &redis.XReadGroupArgs{Group: group, Consumer: consumer, Streams: []string{streamName, "0"}, Count: 1}).Result()
-		if err == redis.Nil || len(streams) == 0 {
-			streams, err = a.redis.XReadGroup(ctx, &redis.XReadGroupArgs{Group: group, Consumer: consumer, Streams: []string{streamName, ">"}, Count: 1, Block: time.Second}).Result()
+		// Prefer fresh events. When the stream is idle, retry this consumer's
+		// oldest pending event without allowing a failed event to block new CDC.
+		streams, err := a.redis.XReadGroup(ctx, &redis.XReadGroupArgs{Group: group, Consumer: consumer, Streams: []string{streamName, ">"}, Count: 1, Block: time.Second}).Result()
+		if errors.Is(err, redis.Nil) {
+			streams, err = a.redis.XReadGroup(ctx, &redis.XReadGroupArgs{Group: group, Consumer: consumer, Streams: []string{streamName, "0"}, Count: 1}).Result()
 		}
 		if err != nil {
+			if !errors.Is(err, redis.Nil) && !errors.Is(err, context.DeadlineExceeded) {
+				a.logger.Error("could not read Redis delivery stream", "error", err)
+			}
 			continue
 		}
 		for _, stream := range streams {
@@ -625,7 +629,11 @@ func (a *app) deliveryLoop(ctx context.Context) {
 					_ = a.redis.XAck(ctx, streamName, group, message.ID).Err()
 					continue
 				}
-				sinks, _ := a.store.EnabledSinksForPipeline(ctx, pipelineID)
+				sinks, err := a.store.EnabledSinksForPipeline(ctx, pipelineID)
+				if err != nil {
+					a.logger.Error("could not load pipeline sinks", "pipeline_id", pipelineID, "error", err)
+					continue
+				}
 				payload, ok := message.Values["payload"].(string)
 				if !ok {
 					continue
@@ -635,8 +643,10 @@ func (a *app) deliveryLoop(ctx context.Context) {
 					if err := a.deliverWebhook(ctx, client, sink, []byte(payload), fmt.Sprint(message.Values["event_id"])); err != nil {
 						delivered = false
 						_ = a.store.RecordDeliveryAttempt(ctx, metadata.DeliveryAttempt{PipelineID: pipelineID, SinkID: sink.ID, EventID: fmt.Sprint(message.Values["event_id"]), RedisStreamID: message.ID, Status: "failed", HTTPStatus: deliveryHTTPStatus(err), Error: err})
+						a.logger.Error("webhook delivery failed", "sink_id", sink.ID, "event_id", fmt.Sprint(message.Values["event_id"]), "error", err)
 					} else {
 						_ = a.store.RecordDeliveryAttempt(ctx, metadata.DeliveryAttempt{PipelineID: pipelineID, SinkID: sink.ID, EventID: fmt.Sprint(message.Values["event_id"]), RedisStreamID: message.ID, Status: "success"})
+						a.logger.Info("webhook delivered", "sink_id", sink.ID, "event_id", fmt.Sprint(message.Values["event_id"]))
 					}
 				}
 				if delivered {
