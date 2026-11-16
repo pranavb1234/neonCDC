@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -16,12 +17,16 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/pranavb1234/neonCDC/worker/internal/logging"
 	"github.com/pranavb1234/neonCDC/worker/internal/metadata"
+	"github.com/pranavb1234/neonCDC/worker/internal/postgres"
+	rediscache "github.com/pranavb1234/neonCDC/worker/internal/redis"
+	"github.com/pranavb1234/neonCDC/worker/internal/replication"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -34,6 +39,7 @@ type app struct {
 	store  *metadata.Store
 	redis  *redis.Client
 	logger *slog.Logger
+	jobs   *pipelineManager
 }
 
 type event struct {
@@ -73,6 +79,14 @@ type tableDetails struct {
 	PrimaryKey      []string      `json:"primary_key"`
 	ReplicaIdentity string        `json:"replica_identity"`
 	CaptureGuidance string        `json:"capture_guidance"`
+}
+type pipelineInput struct {
+	Name   string                   `json:"name"`
+	Tables []metadata.PipelineTable `json:"tables"`
+}
+type pipelineManager struct {
+	mu      sync.Mutex
+	running map[int64]context.CancelFunc
 }
 
 func main() {
@@ -138,7 +152,7 @@ func run(logger *slog.Logger) error {
 		return errors.New("could not connect to Redis")
 	}
 
-	application := &app{store: store, redis: client, logger: logger}
+	application := &app{store: store, redis: client, logger: logger, jobs: &pipelineManager{running: map[int64]context.CancelFunc{}}}
 	server := &http.Server{Addr: ":" + envOrDefault("PORT", "3000"), Handler: application.routes(), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()
@@ -188,6 +202,11 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("GET /api/databases/{id}/schemas/{schema}/tables", a.listTables)
 	mux.HandleFunc("GET /api/databases/{id}/schemas/{schema}/tables/{table}", a.tableDetails)
 	mux.HandleFunc("GET /api/databases/{id}/schemas/{schema}/tables/{table}/preview", a.tablePreview)
+	mux.HandleFunc("GET /api/databases/{id}/pipelines", a.listPipelines)
+	mux.HandleFunc("POST /api/databases/{id}/pipelines", a.createPipeline)
+	mux.HandleFunc("POST /api/pipelines/{id}/start", a.startPipeline)
+	mux.HandleFunc("POST /api/pipelines/{id}/stop", a.stopPipeline)
+	mux.HandleFunc("DELETE /api/pipelines/{id}", a.deletePipeline)
 	return a.static(mux)
 }
 
@@ -282,6 +301,224 @@ func (a *app) deleteDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *app) listPipelines(w http.ResponseWriter, r *http.Request) {
+	databaseID, err := pathID(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid database id"})
+		return
+	}
+	pipelines, err := a.store.ListPipelines(r.Context(), databaseID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Could not list pipelines"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"pipelines": pipelines, "active_limit": 1})
+}
+
+func (a *app) createPipeline(w http.ResponseWriter, r *http.Request) {
+	databaseID, err := pathID(r)
+	input, inputErr := decodeJSON[pipelineInput](r)
+	if err != nil || inputErr != nil || strings.TrimSpace(input.Name) == "" || len(input.Tables) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Enter a pipeline name and select at least one table."})
+		return
+	}
+	if err := a.validatePipelineTables(r, databaseID, input.Tables); err != nil {
+		inspectionError(w, err)
+		return
+	}
+	publicationName, slotName := pipelineNames(databaseID, input.Name)
+	pipelineID, err := a.store.CreatePipeline(r.Context(), input.Name, databaseID, publicationName, slotName, input.Tables)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Could not save pipeline. Choose a unique pipeline name."})
+		return
+	}
+	if err := a.launchPipeline(pipelineID); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"id": pipelineID, "message": "Pipeline created and starting."})
+}
+
+func (a *app) startPipeline(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid pipeline id"})
+		return
+	}
+	if err := a.launchPipeline(id); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"message": "Pipeline is starting."})
+}
+
+func (a *app) stopPipeline(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid pipeline id"})
+		return
+	}
+	if !a.jobs.stop(id) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "Pipeline is not running."})
+		return
+	}
+	if err := a.store.SetPipelineStatus(r.Context(), id, "stopped", ""); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Could not update pipeline status."})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Pipeline stopped. Its slot and publication were preserved for restart."})
+}
+
+func (a *app) deletePipeline(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid pipeline id"})
+		return
+	}
+	pipeline, err := a.store.Pipeline(r.Context(), id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Pipeline was not found."})
+		return
+	}
+	a.jobs.mu.Lock()
+	running := a.jobs.running[id] != nil
+	a.jobs.mu.Unlock()
+	if running || pipeline.Status == "running" || pipeline.Status == "starting" {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "Stop the running pipeline before deleting it."})
+		return
+	}
+	if err := a.cleanupPipeline(r.Context(), pipeline); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Could not remove this pipeline's PostgreSQL slot/publication. The pipeline remains saved."})
+		return
+	}
+	if err := a.store.DeletePipeline(r.Context(), id); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *app) launchPipeline(id int64) error {
+	a.jobs.mu.Lock()
+	defer a.jobs.mu.Unlock()
+	if len(a.jobs.running) >= 1 {
+		return errors.New("CDC Lite first release supports one active pipeline at a time. Stop the active pipeline first.")
+	}
+	if a.jobs.running[id] != nil {
+		return errors.New("pipeline is already running")
+	}
+	pipeline, err := a.store.Pipeline(context.Background(), id)
+	if err != nil {
+		return err
+	}
+	if err := a.store.SetPipelineStatus(context.Background(), id, "starting", ""); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	a.jobs.running[id] = cancel
+	go func() {
+		defer func() { a.jobs.mu.Lock(); delete(a.jobs.running, id); a.jobs.mu.Unlock() }()
+		connectionString, err := a.store.SourceConnectionURL(context.Background(), pipeline.SourceConnectionID)
+		if err != nil {
+			_ = a.store.SetPipelineStatus(context.Background(), id, "failed", "Could not read saved database connection.")
+			return
+		}
+		connectCtx, stop := context.WithTimeout(ctx, 10*time.Second)
+		defer stop()
+		db, err := postgres.Connect(connectCtx, connectionString)
+		if err != nil {
+			_ = a.store.SetPipelineStatus(context.Background(), id, "failed", "Could not connect to source database.")
+			return
+		}
+		defer db.Close(context.Background())
+		publisher := rediscache.NewStreamPublisher(a.redis)
+		_ = a.store.SetPipelineStatus(context.Background(), id, "running", "")
+		tables := make([]replication.Table, 0, len(pipeline.Tables))
+		for _, table := range pipeline.Tables {
+			tables = append(tables, replication.Table{Schema: table.Schema, Name: table.Table})
+		}
+		if err := replication.Run(ctx, db, replication.Config{SourceDBURL: connectionString, SlotName: pipeline.SlotName, PublicationName: pipeline.PublicationName, Tables: tables}, publisher, a.logger); err != nil && ctx.Err() == nil {
+			_ = a.store.SetPipelineStatus(context.Background(), id, "failed", "Logical replication stopped unexpectedly.")
+		}
+	}()
+	return nil
+}
+
+func (m *pipelineManager) stop(id int64) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cancel := m.running[id]
+	if cancel == nil {
+		return false
+	}
+	cancel()
+	delete(m.running, id)
+	return true
+}
+
+func (a *app) validatePipelineTables(r *http.Request, databaseID int64, tables []metadata.PipelineTable) error {
+	connectionString, err := a.store.SourceConnectionURL(r.Context(), databaseID)
+	if err != nil {
+		return err
+	}
+	config, err := pgx.ParseConfig(connectionString)
+	if err != nil {
+		return errors.New("saved database configuration is invalid")
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+	conn, err := pgx.ConnectConfig(ctx, config)
+	if err != nil {
+		return errors.New("could not connect to saved database")
+	}
+	defer conn.Close(context.Background())
+	var walLevel string
+	if err := conn.QueryRow(ctx, "SHOW wal_level").Scan(&walLevel); err != nil || walLevel != "logical" {
+		return errors.New("logical replication is not enabled on this source database")
+	}
+	var canReplicate bool
+	if err := conn.QueryRow(ctx, "SELECT rolreplication FROM pg_roles WHERE rolname = current_user").Scan(&canReplicate); err != nil || !canReplicate {
+		return errors.New("source database role does not have REPLICATION permission")
+	}
+	for _, table := range tables {
+		if !inspectableSchema(table.Schema) || !inspectableName(table.Table) {
+			return errors.New("invalid selected table")
+		}
+		var exists bool
+		if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2 AND table_type = 'BASE TABLE')`, table.Schema, table.Table).Scan(&exists); err != nil || !exists {
+			return errors.New("a selected table is no longer available")
+		}
+	}
+	return nil
+}
+
+func pipelineNames(databaseID int64, name string) (string, string) {
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d:%s", databaseID, name))))[:12]
+	return "cdc_lite_pub_" + hash, "cdc_lite_slot_" + hash
+}
+
+func (a *app) cleanupPipeline(parent context.Context, pipeline metadata.Pipeline) error {
+	connectionString, err := a.store.SourceConnectionURL(parent, pipeline.SourceConnectionID)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(parent, 8*time.Second)
+	defer cancel()
+	conn, err := pgx.Connect(ctx, connectionString)
+	if err != nil {
+		return err
+	}
+	defer conn.Close(context.Background())
+	if _, err := conn.Exec(ctx, "SELECT pg_drop_replication_slot($1) WHERE EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = $1)", pipeline.SlotName); err != nil {
+		return err
+	}
+	publicationIdentifier := pgx.Identifier{pipeline.PublicationName}.Sanitize()
+	if _, err := conn.Exec(ctx, "DROP PUBLICATION IF EXISTS "+publicationIdentifier); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (a *app) listSchemas(w http.ResponseWriter, r *http.Request) {

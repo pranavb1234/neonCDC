@@ -121,6 +121,12 @@ Saving a database never starts a CDC pipeline automatically.
 
 Selecting **Browse** on a saved database opens a read-only inspection view. It lists non-system schemas and base tables, then shows column metadata, primary-key columns, replica identity, and at most 25 preview rows. CDC Lite quotes selected schema/table identifiers, uses a short read-only transaction, and never accepts browser-provided SQL. It does not modify source schemas or table data.
 
+## Create a CDC pipeline
+
+From a saved database's **Browse** screen, select a schema and one or more tables, then choose **Create Pipeline**. CDC Lite validates that the tables still exist and verifies logical replication prerequisites again before it creates a unique publication and replication slot. It does not change table replica identity; tables without a primary key or `REPLICA IDENTITY FULL` remain clearly flagged in the table inspector.
+
+The first customer release supports **one active pipeline per CDC Lite installation**. Additional pipelines may be saved but must remain stopped until the active one is stopped. Stopping a pipeline preserves its publication and slot for a restart. Delete is available only after a pipeline is stopped, then removes only that pipeline's deterministically named publication and slot.
+
 ## Create a customer Docker Compose ZIP
 
 Build the customer server image from the repository root:

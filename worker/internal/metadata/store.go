@@ -35,6 +35,17 @@ type PipelineTable struct {
 	Table  string
 }
 
+type Pipeline struct {
+	ID                 int64           `json:"id"`
+	Name               string          `json:"name"`
+	SourceConnectionID int64           `json:"source_connection_id"`
+	PublicationName    string          `json:"publication_name"`
+	SlotName           string          `json:"slot_name"`
+	Status             string          `json:"status"`
+	LastError          *string         `json:"last_error,omitempty"`
+	Tables             []PipelineTable `json:"tables"`
+}
+
 type DeliveryAttempt struct {
 	PipelineID    int64
 	SinkID        int64
@@ -284,6 +295,93 @@ func (s *Store) CreatePipeline(ctx context.Context, name string, sourceConnectio
 		return 0, errors.New("could not commit pipeline")
 	}
 	return pipelineID, nil
+}
+
+func (s *Store) ListPipelines(ctx context.Context, sourceConnectionID int64) ([]Pipeline, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, source_connection_id, publication_name, slot_name, status, last_error FROM pipelines WHERE source_connection_id = ? ORDER BY name`, sourceConnectionID)
+	if err != nil {
+		return nil, errors.New("could not list pipelines")
+	}
+	defer rows.Close()
+	items := []Pipeline{}
+	for rows.Next() {
+		var item Pipeline
+		if err := rows.Scan(&item.ID, &item.Name, &item.SourceConnectionID, &item.PublicationName, &item.SlotName, &item.Status, &item.LastError); err != nil {
+			return nil, errors.New("could not read pipeline")
+		}
+		tables, err := s.pipelineTables(ctx, item.ID)
+		if err != nil {
+			return nil, err
+		}
+		item.Tables = tables
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) Pipeline(ctx context.Context, id int64) (Pipeline, error) {
+	var item Pipeline
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, source_connection_id, publication_name, slot_name, status, last_error FROM pipelines WHERE id = ?`, id).Scan(&item.ID, &item.Name, &item.SourceConnectionID, &item.PublicationName, &item.SlotName, &item.Status, &item.LastError)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Pipeline{}, errors.New("pipeline was not found")
+	}
+	if err != nil {
+		return Pipeline{}, errors.New("could not read pipeline")
+	}
+	tables, err := s.pipelineTables(ctx, id)
+	if err != nil {
+		return Pipeline{}, err
+	}
+	item.Tables = tables
+	return item, nil
+}
+
+func (s *Store) SetPipelineStatus(ctx context.Context, id int64, status, lastError string) error {
+	if status != "stopped" && status != "starting" && status != "running" && status != "failed" {
+		return errors.New("invalid pipeline status")
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE pipelines SET status = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, status, nullableString(lastError), id)
+	if err != nil {
+		return errors.New("could not update pipeline status")
+	}
+	changed, err := result.RowsAffected()
+	if err != nil || changed != 1 {
+		return errors.New("pipeline was not found")
+	}
+	return nil
+}
+
+func (s *Store) DeletePipeline(ctx context.Context, id int64) error {
+	var status string
+	if err := s.db.QueryRowContext(ctx, `SELECT status FROM pipelines WHERE id = ?`, id).Scan(&status); errors.Is(err, sql.ErrNoRows) {
+		return errors.New("pipeline was not found")
+	} else if err != nil {
+		return errors.New("could not read pipeline")
+	}
+	if status == "running" || status == "starting" {
+		return errors.New("stop the running pipeline before deleting it")
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM pipelines WHERE id = ?`, id); err != nil {
+		return errors.New("could not delete pipeline")
+	}
+	return nil
+}
+
+func (s *Store) pipelineTables(ctx context.Context, pipelineID int64) ([]PipelineTable, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT schema_name, table_name FROM pipeline_tables WHERE pipeline_id = ? ORDER BY schema_name, table_name`, pipelineID)
+	if err != nil {
+		return nil, errors.New("could not read pipeline tables")
+	}
+	defer rows.Close()
+	tables := []PipelineTable{}
+	for rows.Next() {
+		var table PipelineTable
+		if err := rows.Scan(&table.Schema, &table.Table); err != nil {
+			return nil, errors.New("could not read pipeline table")
+		}
+		tables = append(tables, table)
+	}
+	return tables, rows.Err()
 }
 
 func (s *Store) CreateWebhookSink(ctx context.Context, pipelineID int64, name, webhookURL, signingSecret string) (int64, error) {

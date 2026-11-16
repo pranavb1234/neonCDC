@@ -53,6 +53,7 @@ func run(logger *slog.Logger) error {
 		SourceDBURL:     cfg.SourceDBURL,
 		SlotName:        cfg.ReplicationSlot,
 		PublicationName: cfg.PublicationName,
+		Tables:          []replication.Table{{Schema: "public", Name: "users"}, {Schema: "public", Name: "orders"}},
 	}, publisher, logger); err != nil {
 		return err
 	}

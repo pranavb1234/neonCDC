@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"strings"
 
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5"
@@ -19,6 +20,12 @@ type Config struct {
 	SourceDBURL     string
 	SlotName        string
 	PublicationName string
+	Tables          []Table
+}
+
+type Table struct {
+	Schema string
+	Name   string
 }
 
 type EventPublisher interface {
@@ -29,7 +36,7 @@ func Run(ctx context.Context, db *pgx.Conn, cfg Config, publisher EventPublisher
 	if err := verifyPrerequisites(ctx, db); err != nil {
 		return err
 	}
-	if err := ensurePublication(ctx, db, cfg.PublicationName); err != nil {
+	if err := ensurePublication(ctx, db, cfg.PublicationName, cfg.Tables); err != nil {
 		return err
 	}
 
@@ -83,7 +90,10 @@ func verifyPrerequisites(ctx context.Context, db *pgx.Conn) error {
 	return nil
 }
 
-func ensurePublication(ctx context.Context, db *pgx.Conn, publicationName string) error {
+func ensurePublication(ctx context.Context, db *pgx.Conn, publicationName string, tables []Table) error {
+	if len(tables) == 0 {
+		return errors.New("at least one table must be selected for the CDC publication")
+	}
 	var exists bool
 	if err := db.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = $1)", publicationName).Scan(&exists); err != nil {
 		return errors.New("could not check the CDC publication")
@@ -92,9 +102,13 @@ func ensurePublication(ctx context.Context, db *pgx.Conn, publicationName string
 		return nil
 	}
 
-	statement := fmt.Sprintf("CREATE PUBLICATION %s FOR TABLE public.users, public.orders", publicationName)
+	quotedTables := make([]string, 0, len(tables))
+	for _, table := range tables {
+		quotedTables = append(quotedTables, pgx.Identifier{table.Schema, table.Name}.Sanitize())
+	}
+	statement := fmt.Sprintf("CREATE PUBLICATION %s FOR TABLE %s", pgx.Identifier{publicationName}.Sanitize(), strings.Join(quotedTables, ", "))
 	if _, err := db.Exec(ctx, statement); err != nil {
-		return errors.New("could not create the CDC publication; use the table owner and ensure public.users and public.orders exist")
+		return errors.New("could not create the CDC publication; use the table owner and verify the selected tables")
 	}
 	return nil
 }
