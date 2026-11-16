@@ -54,3 +54,20 @@ func TestMetadataStoresEncryptedSecretsAndDeliveryHistory(t *testing.T) {
 		t.Fatal("sink error was not safely redacted")
 	}
 }
+
+func TestSinkHealthRequiresDeliveryEvidence(t *testing.T) {
+	if health, _, _ := sinkHealth(true, nil); health != "unknown" {
+		t.Fatalf("health without deliveries = %q", health)
+	}
+	success := []DeliveryAttemptRecord{{Status: "success", AttemptedAt: "2026-01-01T00:00:00Z"}}
+	if health, _, _ := sinkHealth(true, success); health != "healthy" {
+		t.Fatalf("health after success = %q", health)
+	}
+	failures := []DeliveryAttemptRecord{{Status: "failed"}, {Status: "failed"}, {Status: "failed"}}
+	if health, _, _ := sinkHealth(true, failures); health != "failing" {
+		t.Fatalf("health after repeated failures = %q", health)
+	}
+	if health, _, _ := sinkHealth(false, success); health != "paused" {
+		t.Fatalf("disabled sink health = %q", health)
+	}
+}

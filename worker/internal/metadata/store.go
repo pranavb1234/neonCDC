@@ -47,16 +47,20 @@ type Pipeline struct {
 }
 
 type Sink struct {
-	ID                 int64   `json:"id"`
-	PipelineID         int64   `json:"pipeline_id"`
-	PipelineName       string  `json:"pipeline_name,omitempty"`
-	Name               string  `json:"name"`
-	Type               string  `json:"type"`
-	WebhookURL         string  `json:"webhook_url"`
-	Enabled            bool    `json:"enabled"`
-	LastDeliveryStatus *string `json:"last_delivery_status,omitempty"`
-	LastDeliveryAt     *string `json:"last_delivery_at,omitempty"`
-	LastError          *string `json:"last_error,omitempty"`
+	ID                 int64                   `json:"id"`
+	PipelineID         int64                   `json:"pipeline_id"`
+	PipelineName       string                  `json:"pipeline_name,omitempty"`
+	Name               string                  `json:"name"`
+	Type               string                  `json:"type"`
+	WebhookURL         string                  `json:"webhook_url"`
+	Enabled            bool                    `json:"enabled"`
+	LastDeliveryStatus *string                 `json:"last_delivery_status,omitempty"`
+	LastDeliveryAt     *string                 `json:"last_delivery_at,omitempty"`
+	LastError          *string                 `json:"last_error,omitempty"`
+	Health             string                  `json:"health"`
+	LastSuccessfulAt   *string                 `json:"last_successful_at,omitempty"`
+	LastFailedAt       *string                 `json:"last_failed_at,omitempty"`
+	RecentAttempts     []DeliveryAttemptRecord `json:"recent_attempts"`
 }
 
 type DeliveryAttempt struct {
@@ -68,6 +72,18 @@ type DeliveryAttempt struct {
 	HTTPStatus    int
 	Error         error
 }
+
+// DeliveryAttemptRecord is intentionally limited to operational metadata. It
+// never contains a webhook secret or event payload.
+type DeliveryAttemptRecord struct {
+	EventID     string  `json:"event_id"`
+	Status      string  `json:"status"`
+	HTTPStatus  *int    `json:"http_status,omitempty"`
+	Error       *string `json:"error,omitempty"`
+	AttemptedAt string  `json:"attempted_at"`
+}
+
+const deliveryHistoryLimit = 20
 
 type SchemaObject struct {
 	Type string
@@ -464,7 +480,6 @@ func (s *Store) ListSinks(ctx context.Context) ([]Sink, error) {
 	if err != nil {
 		return nil, errors.New("could not list sinks")
 	}
-	defer rows.Close()
 	sinks := []Sink{}
 	for rows.Next() {
 		var item Sink
@@ -473,7 +488,86 @@ func (s *Store) ListSinks(ctx context.Context) ([]Sink, error) {
 		}
 		sinks = append(sinks, item)
 	}
-	return sinks, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, errors.New("could not finish listing sinks")
+	}
+	for index := range sinks {
+		attempts, err := s.deliveryAttempts(ctx, sinks[index].ID, deliveryHistoryLimit)
+		if err != nil {
+			return nil, err
+		}
+		sinks[index].RecentAttempts = attempts
+		sinks[index].Health, sinks[index].LastSuccessfulAt, sinks[index].LastFailedAt = sinkHealth(sinks[index].Enabled, attempts)
+	}
+	return sinks, nil
+}
+
+func (s *Store) Sink(ctx context.Context, sinkID int64) (Sink, error) {
+	var sink Sink
+	err := s.db.QueryRowContext(ctx, `SELECT s.id, s.pipeline_id, p.name, s.name, s.type, s.webhook_url, s.enabled, s.last_delivery_status, s.last_delivery_at, s.last_error FROM sinks s JOIN pipelines p ON p.id = s.pipeline_id WHERE s.id = ?`, sinkID).Scan(&sink.ID, &sink.PipelineID, &sink.PipelineName, &sink.Name, &sink.Type, &sink.WebhookURL, &sink.Enabled, &sink.LastDeliveryStatus, &sink.LastDeliveryAt, &sink.LastError)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Sink{}, errors.New("sink was not found")
+	}
+	if err != nil {
+		return Sink{}, errors.New("could not read sink")
+	}
+	return sink, nil
+}
+
+func (s *Store) deliveryAttempts(ctx context.Context, sinkID int64, limit int) ([]DeliveryAttemptRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT event_id, status, http_status, error_message, attempted_at FROM delivery_attempts WHERE sink_id = ? ORDER BY id DESC LIMIT ?`, sinkID, limit)
+	if err != nil {
+		return nil, errors.New("could not list delivery attempts")
+	}
+	defer rows.Close()
+	attempts := []DeliveryAttemptRecord{}
+	for rows.Next() {
+		var item DeliveryAttemptRecord
+		if err := rows.Scan(&item.EventID, &item.Status, &item.HTTPStatus, &item.Error, &item.AttemptedAt); err != nil {
+			return nil, errors.New("could not read delivery attempt")
+		}
+		attempts = append(attempts, item)
+	}
+	return attempts, rows.Err()
+}
+
+func sinkHealth(enabled bool, attempts []DeliveryAttemptRecord) (string, *string, *string) {
+	if len(attempts) == 0 {
+		if !enabled {
+			return "paused", nil, nil
+		}
+		return "unknown", nil, nil
+	}
+	var lastSuccess, lastFailure *string
+	failures := 0
+	for _, attempt := range attempts {
+		if attempt.Status == "success" {
+			if lastSuccess == nil {
+				value := attempt.AttemptedAt
+				lastSuccess = &value
+			}
+		} else {
+			failures++
+			if lastFailure == nil {
+				value := attempt.AttemptedAt
+				lastFailure = &value
+			}
+		}
+	}
+	if !enabled {
+		return "paused", lastSuccess, lastFailure
+	}
+	if len(attempts) >= 3 && failures == len(attempts) {
+		return "failing", lastSuccess, lastFailure
+	}
+	if attempts[0].Status == "failed" {
+		return "degraded", lastSuccess, lastFailure
+	}
+	return "healthy", lastSuccess, lastFailure
 }
 
 func (s *Store) EnabledSinksForPipeline(ctx context.Context, pipelineID int64) ([]Sink, error) {
@@ -528,6 +622,11 @@ func (s *Store) RecordDeliveryAttempt(ctx context.Context, attempt DeliveryAttem
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE sinks SET last_delivery_status = ?, last_delivery_at = ?, last_error = ?, updated_at = ? WHERE id = ?`, attempt.Status, time.Now().UTC().Format(time.RFC3339Nano), nullableString(message), time.Now().UTC().Format(time.RFC3339Nano), attempt.SinkID); err != nil {
 		return errors.New("could not update sink delivery status")
+	}
+	// Keep at most 100 records per sink. The overview returns only the newest
+	// 20, so delivery history cannot grow without bound on a small installation.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM delivery_attempts WHERE sink_id = ? AND id NOT IN (SELECT id FROM delivery_attempts WHERE sink_id = ? ORDER BY id DESC LIMIT 100)`, attempt.SinkID, attempt.SinkID); err != nil {
+		return errors.New("could not trim delivery history")
 	}
 	if err := tx.Commit(); err != nil {
 		return errors.New("could not commit delivery history")

@@ -101,6 +101,14 @@ type sinkInput struct {
 	Enabled       bool   `json:"enabled"`
 }
 
+type webhookDeliveryError struct {
+	status int
+	err    error
+}
+
+func (e *webhookDeliveryError) Error() string { return e.err.Error() }
+func (e *webhookDeliveryError) Unwrap() error { return e.err }
+
 func main() {
 	logger := logging.New()
 	if len(os.Args) > 1 && os.Args[1] == "admin-password" {
@@ -226,6 +234,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("GET /api/sinks", a.listSinks)
 	mux.HandleFunc("POST /api/sinks", a.createSink)
 	mux.HandleFunc("PATCH /api/sinks/{id}/enabled", a.setSinkEnabled)
+	mux.HandleFunc("POST /api/sinks/{id}/test", a.sendSinkTest)
 	return a.static(mux)
 }
 
@@ -486,6 +495,47 @@ func (a *app) setSinkEnabled(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"message": "Sink updated"})
 }
 
+func (a *app) sendSinkTest(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid sink id"})
+		return
+	}
+	sink, err := a.store.Sink(r.Context(), id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Sink was not found"})
+		return
+	}
+	eventID, err := randomSecret()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Could not create test event"})
+		return
+	}
+	payload, err := json.Marshal(map[string]any{
+		"id":         "test_" + eventID,
+		"table":      "cdc_lite_test",
+		"operation":  "test",
+		"commit_lsn": "test",
+		"data":       map[string]string{"message": "CDC Lite webhook test event"},
+		"created_at": time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Could not encode test event"})
+		return
+	}
+	err = a.deliverWebhook(r.Context(), webhookHTTPClient(), sink, payload, "test_"+eventID)
+	attempt := metadata.DeliveryAttempt{PipelineID: sink.PipelineID, SinkID: sink.ID, EventID: "test_" + eventID, RedisStreamID: "test", Status: "success"}
+	if err != nil {
+		attempt.Status, attempt.Error, attempt.HTTPStatus = "failed", err, deliveryHTTPStatus(err)
+	}
+	_ = a.store.RecordDeliveryAttempt(r.Context(), attempt)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Webhook test failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Test event delivered"})
+}
+
 func randomSecret() (string, error) {
 	bytes := make([]byte, 32)
 	if _, err := rand.Read(bytes); err != nil {
@@ -584,7 +634,7 @@ func (a *app) deliveryLoop(ctx context.Context) {
 				for _, sink := range sinks {
 					if err := a.deliverWebhook(ctx, client, sink, []byte(payload), fmt.Sprint(message.Values["event_id"])); err != nil {
 						delivered = false
-						_ = a.store.RecordDeliveryAttempt(ctx, metadata.DeliveryAttempt{PipelineID: pipelineID, SinkID: sink.ID, EventID: fmt.Sprint(message.Values["event_id"]), RedisStreamID: message.ID, Status: "failed", Error: err})
+						_ = a.store.RecordDeliveryAttempt(ctx, metadata.DeliveryAttempt{PipelineID: pipelineID, SinkID: sink.ID, EventID: fmt.Sprint(message.Values["event_id"]), RedisStreamID: message.ID, Status: "failed", HTTPStatus: deliveryHTTPStatus(err), Error: err})
 					} else {
 						_ = a.store.RecordDeliveryAttempt(ctx, metadata.DeliveryAttempt{PipelineID: pipelineID, SinkID: sink.ID, EventID: fmt.Sprint(message.Values["event_id"]), RedisStreamID: message.ID, Status: "success"})
 					}
@@ -628,9 +678,17 @@ func (a *app) deliverWebhook(ctx context.Context, client *http.Client, sink meta
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("webhook returned HTTP %d", response.StatusCode)
+		return &webhookDeliveryError{status: response.StatusCode, err: fmt.Errorf("webhook returned HTTP %d", response.StatusCode)}
 	}
 	return nil
+}
+
+func deliveryHTTPStatus(err error) int {
+	var deliveryErr *webhookDeliveryError
+	if errors.As(err, &deliveryErr) {
+		return deliveryErr.status
+	}
+	return 0
 }
 
 func (a *app) launchPipeline(id int64) error {

@@ -135,6 +135,18 @@ Each sink receives events from its selected pipeline only. CDC Lite sends the ex
 
 Delivery is sequential. A failed request remains pending in Redis and is retried after a short delay; there is no retry schedule or dead-letter queue in this first release. Duplicate webhook deliveries remain possible.
 
+The sink overview derives its health from actual recorded deliveries: **Healthy** means the newest attempt succeeded; **Degraded** means the newest attempt failed after earlier success; **Failing** means at least three recent attempts all failed; **Paused** means the sink is disabled; and **Unknown** means it has never been attempted. It retains the newest 100 attempt records per sink and displays the newest 20. History includes only event ID, time, outcome, HTTP status, and a redacted error summary — never event payloads or secrets.
+
+### End-to-end webhook demonstration
+
+1. Open a unique endpoint at [Webhook.site](https://webhook.site/) and copy its HTTPS URL. (The packaged server deliberately rejects `localhost` and other private destinations to prevent SSRF.)
+2. In **Sinks**, create an enabled Webhook sink for the running pipeline, using the Webhook.site URL. Keep the generated signing secret if you want to verify the signature independently.
+3. Click **Send Test Event**. The sink should show a successful delivery and the request should appear in Webhook.site with the `X-CDC-Event-Id`, `X-CDC-Timestamp`, and `X-CDC-Signature` headers.
+4. Start the selected pipeline, then make an `INSERT`, `UPDATE`, or `DELETE` on one of its selected source tables.
+5. Refresh the sink overview. A delivery attempt for the CDC event ID should appear. The receiver must treat that ID as an idempotency key because Redis/CDC recovery can deliver an event more than once.
+
+For the included local Go receiver, expose `sample/receiver` through a public HTTPS tunnel and use the resulting public URL; do not weaken the production SSRF protection merely to target `localhost`.
+
 ## Create a customer Docker Compose ZIP
 
 Build the customer server image from the repository root:
