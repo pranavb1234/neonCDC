@@ -921,16 +921,18 @@ func (a *app) static(api http.Handler) http.Handler {
 			return
 		}
 		if !strings.Contains(r.URL.Path, ".") {
-			page := strings.TrimPrefix(strings.TrimSuffix(r.URL.Path, "/"), "/")
-			if page == "" {
-				page = "index"
-			} else {
-				page += "/index"
+			page := strings.Trim(r.URL.Path, "/")
+			candidates := []string{"index.html"}
+			if page != "" {
+				// Next static exports may emit either page.html or page/index.html.
+				candidates = []string{page + ".html", page + "/index.html"}
 			}
-			if content, err := fs.ReadFile(assets, page+".html"); err == nil {
-				w.Header().Set("Content-Type", "text/html; charset=utf-8")
-				_, _ = w.Write(content)
-				return
+			for _, candidate := range candidates {
+				if content, err := fs.ReadFile(assets, candidate); err == nil {
+					w.Header().Set("Content-Type", "text/html; charset=utf-8")
+					_, _ = w.Write(content)
+					return
+				}
 			}
 		}
 		files.ServeHTTP(w, r)
