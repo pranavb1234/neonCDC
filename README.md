@@ -119,6 +119,8 @@ For remote sources, provide `sslmode=require`, `sslmode=verify-ca`, or `sslmode=
 
 Saving a database never starts a CDC pipeline automatically.
 
+Selecting **Browse** on a saved database opens a read-only inspection view. It lists non-system schemas and base tables, then shows column metadata, primary-key columns, replica identity, and at most 25 preview rows. CDC Lite quotes selected schema/table identifiers, uses a short read-only transaction, and never accepts browser-provided SQL. It does not modify source schemas or table data.
+
 ## Create a customer Docker Compose ZIP
 
 Build the customer server image from the repository root:
