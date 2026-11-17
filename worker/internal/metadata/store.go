@@ -387,7 +387,7 @@ func (s *Store) ListAllPipelines(ctx context.Context) ([]Pipeline, error) {
 }
 
 func (s *Store) MarkInterruptedPipelinesStopped(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE pipelines SET status = 'stopped', last_error = 'Stopped because CDC Lite restarted.', updated_at = CURRENT_TIMESTAMP WHERE status IN ('running', 'starting')`)
+	_, err := s.db.ExecContext(ctx, `UPDATE pipelines SET status = 'stopped', last_error = 'Stopped because Walflow restarted.', updated_at = CURRENT_TIMESTAMP WHERE status IN ('running', 'starting')`)
 	if err != nil {
 		return errors.New("could not recover pipeline statuses")
 	}

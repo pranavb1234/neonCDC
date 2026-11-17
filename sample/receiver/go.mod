@@ -1,3 +1,3 @@
-module github.com/pranavb1234/neonCDC/sample/receiver
+module github.com/pranavb1234/walflow/sample/receiver
 
 go 1.23.0

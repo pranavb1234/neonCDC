@@ -8,11 +8,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pranavb1234/neonCDC/worker/internal/config"
-	"github.com/pranavb1234/neonCDC/worker/internal/logging"
-	"github.com/pranavb1234/neonCDC/worker/internal/postgres"
-	rediscache "github.com/pranavb1234/neonCDC/worker/internal/redis"
-	"github.com/pranavb1234/neonCDC/worker/internal/replication"
+	"github.com/pranavb1234/walflow/worker/internal/config"
+	"github.com/pranavb1234/walflow/worker/internal/logging"
+	"github.com/pranavb1234/walflow/worker/internal/postgres"
+	rediscache "github.com/pranavb1234/walflow/worker/internal/redis"
+	"github.com/pranavb1234/walflow/worker/internal/replication"
 )
 
 func main() {

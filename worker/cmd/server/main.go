@@ -27,11 +27,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/pranavb1234/neonCDC/worker/internal/logging"
-	"github.com/pranavb1234/neonCDC/worker/internal/metadata"
-	"github.com/pranavb1234/neonCDC/worker/internal/postgres"
-	rediscache "github.com/pranavb1234/neonCDC/worker/internal/redis"
-	"github.com/pranavb1234/neonCDC/worker/internal/replication"
+	"github.com/pranavb1234/walflow/worker/internal/logging"
+	"github.com/pranavb1234/walflow/worker/internal/metadata"
+	"github.com/pranavb1234/walflow/worker/internal/postgres"
+	rediscache "github.com/pranavb1234/walflow/worker/internal/redis"
+	"github.com/pranavb1234/walflow/worker/internal/replication"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -135,7 +135,7 @@ func resetAdminPassword() error {
 	if err != nil {
 		return errors.New("could not read administrator password")
 	}
-	store, err := metadata.Open(context.Background(), metadata.Config{Path: envOrDefault("METADATA_DB_PATH", "/data/cdc-lite.db"), EncryptionKey: os.Getenv("APP_ENCRYPTION_KEY")})
+	store, err := metadata.Open(context.Background(), metadata.Config{Path: envOrDefault("METADATA_DB_PATH", "/data/walflow.db"), EncryptionKey: os.Getenv("APP_ENCRYPTION_KEY")})
 	if err != nil {
 		return err
 	}
@@ -150,7 +150,7 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	store, err := metadata.Open(ctx, metadata.Config{Path: envOrDefault("METADATA_DB_PATH", "/data/cdc-lite.db"), EncryptionKey: os.Getenv("APP_ENCRYPTION_KEY")})
+	store, err := metadata.Open(ctx, metadata.Config{Path: envOrDefault("METADATA_DB_PATH", "/data/walflow.db"), EncryptionKey: os.Getenv("APP_ENCRYPTION_KEY")})
 	if err != nil {
 		return err
 	}
@@ -184,7 +184,7 @@ func run(logger *slog.Logger) error {
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
 	}()
-	logger.Info("cdc-lite server started", "port", envOrDefault("PORT", "3000"))
+	logger.Info("walflow server started", "port", envOrDefault("PORT", "3000"))
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -513,10 +513,10 @@ func (a *app) sendSinkTest(w http.ResponseWriter, r *http.Request) {
 	}
 	payload, err := json.Marshal(map[string]any{
 		"id":         "test_" + eventID,
-		"table":      "cdc_lite_test",
+		"table":      "walflow_test",
 		"operation":  "test",
 		"commit_lsn": "test",
-		"data":       map[string]string{"message": "CDC Lite webhook test event"},
+		"data":       map[string]string{"message": "Walflow webhook test event"},
 		"created_at": time.Now().UTC().Format(time.RFC3339Nano),
 	})
 	if err != nil {
@@ -705,7 +705,7 @@ func (a *app) launchPipeline(id int64) error {
 	a.jobs.mu.Lock()
 	defer a.jobs.mu.Unlock()
 	if len(a.jobs.running) >= 1 {
-		return errors.New("CDC Lite first release supports one active pipeline at a time. Stop the active pipeline first.")
+		return errors.New("Walflow first release supports one active pipeline at a time. Stop the active pipeline first.")
 	}
 	if a.jobs.running[id] != nil {
 		return errors.New("pipeline is already running")
@@ -797,7 +797,7 @@ func (a *app) validatePipelineTables(r *http.Request, databaseID int64, tables [
 
 func pipelineNames(databaseID int64, name string) (string, string) {
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d:%s", databaseID, name))))[:12]
-	return "cdc_lite_pub_" + hash, "cdc_lite_slot_" + hash
+	return "walflow_pub_" + hash, "walflow_slot_" + hash
 }
 
 func (a *app) cleanupPipeline(parent context.Context, pipeline metadata.Pipeline) error {

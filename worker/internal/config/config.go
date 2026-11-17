@@ -49,8 +49,8 @@ func Load() (Config, error) {
 	if err != nil || (redis.Scheme != "redis" && redis.Scheme != "rediss") || redis.Hostname() == "" {
 		return Config{}, errors.New("REDIS_URL must be a Redis connection URL")
 	}
-	replicationSlot := envOrDefault("REPLICATION_SLOT", "cdc_lite_slot")
-	publicationName := envOrDefault("PUBLICATION_NAME", "cdc_lite_publication")
+	replicationSlot := envOrDefault("REPLICATION_SLOT", "walflow_slot")
+	publicationName := envOrDefault("PUBLICATION_NAME", "walflow_publication")
 	if !isIdentifier(replicationSlot) || !isIdentifier(publicationName) {
 		return Config{}, errors.New("REPLICATION_SLOT and PUBLICATION_NAME must be lowercase PostgreSQL identifiers")
 	}

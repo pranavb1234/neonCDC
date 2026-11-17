@@ -3,9 +3,9 @@ title: Webhook sinks
 description: Deliver signed CDC events and test the receiver.
 ---
 
-Open **Sinks**, choose **Create Sink**, select the pipeline, enter a public HTTPS endpoint, provide a secret or let CDC Lite generate one, then review and save. A generated secret is shown once only.
+Open **Sinks**, choose **Create Sink**, select the pipeline, enter a public HTTPS endpoint, provide a secret or let Walflow generate one, then review and save. A generated secret is shown once only.
 
-CDC Lite signs the exact raw JSON request body with HMAC-SHA256 over `timestamp + "." + body`:
+Walflow signs the exact raw JSON request body with HMAC-SHA256 over `timestamp + "." + body`:
 
 ```text
 X-CDC-Event-Id

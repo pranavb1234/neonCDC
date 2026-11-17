@@ -1,5 +1,5 @@
 {
-  "name": "cdc-lite-dashboard",
+  "name": "walflow-dashboard",
   "private": true,
   "scripts": {
     "dev": "next dev",

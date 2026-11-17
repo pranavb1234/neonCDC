@@ -9,7 +9,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/pranavb1234/neonCDC/worker/internal/metadata"
+	"github.com/pranavb1234/walflow/worker/internal/metadata"
 )
 
 func main() {

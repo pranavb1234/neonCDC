@@ -14,8 +14,8 @@ export function SiteHeader() {
             </span>
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="text-base font-semibold tracking-tight text-white">CDC</span>
-            <span className="font-pixel text-xs tracking-wider text-emerald-400 uppercase">Lite</span>
+            <span className="text-base font-semibold tracking-tight text-white">Wal</span>
+            <span className="font-pixel text-xs tracking-wider text-emerald-400 uppercase">flow</span>
           </div>
         </Link>
 
@@ -28,7 +28,7 @@ export function SiteHeader() {
             <span>Docs</span>
           </Link>
           <a
-            href="https://github.com/pranavb1234/neonCDC"
+            href="https://github.com/pranavb1234/walflow"
             target="_blank"
             rel="noreferrer"
             className="flex items-center gap-1.5 text-zinc-400 transition-colors hover:text-emerald-400"

@@ -1,4 +1,4 @@
-# CDC Lite architecture and repository map
+# Walflow architecture and repository map
 
 ## Architecture at a glance
 
@@ -39,13 +39,13 @@ The customer-facing Docker deployment runs the Go server and Redis. The server o
 
 ## Important implementation boundaries
 
-CDC Lite is deliberately a small single-installation product. It supports one running pipeline, one Redis stream, sequential delivery, and SQLite for small platform metadata. This keeps the project understandable while still demonstrating real CDC and event-driven engineering concepts.
+Walflow is deliberately a small single-installation product. It supports one running pipeline, one Redis stream, sequential delivery, and SQLite for small platform metadata. This keeps the project understandable while still demonstrating real CDC and event-driven engineering concepts.
 
 It is not a multi-tenant SaaS, a managed database product, or an unlimited-scale pipeline engine.
 
 ## Runtime components in detail
 
-### `cdc-lite-server`
+### `walflow-server`
 
 This is the main customer-facing runtime. Its executable begins at `worker/cmd/server/main.go`.
 
@@ -57,7 +57,7 @@ This is the main customer-facing runtime. Its executable begins at `worker/cmd/s
 
 ### PostgreSQL source database
 
-The source database is external to CDC Lite. It owns WAL, publication records, replication slots, and the actual business tables. CDC Lite uses two connections:
+The source database is external to Walflow. It owns WAL, publication records, replication slots, and the actual business tables. Walflow uses two connections:
 
 1. A normal pgx SQL connection for prerequisite checks, table inspection, publication creation, and metadata queries.
 2. A second replication-protocol connection with `replication=database` appended to the connection URL. This connection receives raw `CopyData` frames containing `pgoutput` messages.
@@ -70,7 +70,7 @@ The `server-delivery` consumer group tracks delivery progress. A message is ackn
 
 ### SQLite metadata database
 
-SQLite is the control-plane store in `/data/cdc-lite.db`. It survives server restarts through the Docker volume. The database uses foreign keys, WAL mode, a busy timeout, and one connection because this is a small single-server installation.
+SQLite is the control-plane store in `/data/walflow.db`. It survives server restarts through the Docker volume. The database uses foreign keys, WAL mode, a busy timeout, and one connection because this is a small single-server installation.
 
 It stores *configuration and observable history*, not live WAL messages: administrator record, encrypted source URLs, pipeline table selections, sink settings, and safe delivery-attempt metadata.
 

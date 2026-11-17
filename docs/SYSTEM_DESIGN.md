@@ -1,4 +1,4 @@
-# CDC Lite system design
+# Walflow system design
 
 ## The complete system
 
@@ -9,7 +9,7 @@ flowchart TB
   CONSOLE[Customer console<br/>Next.js static files]
 
   subgraph COMPOSE[Customer Docker Compose installation]
-    subgraph SERVER[cdc-lite-server container]
+    subgraph SERVER[walflow-server container]
       HTTP[Go HTTP server<br/>health + API + static console]
       CONTROL[Control-plane API handlers]
       PM[Pipeline manager<br/>one active job]
@@ -19,7 +19,7 @@ flowchart TB
       EMBED[Embedded web assets]
     end
     REDIS[(Redis 7<br/>Stream: cdc:events)]
-    SQLITE[(SQLite metadata<br/>/data/cdc-lite.db)]
+    SQLITE[(SQLite metadata<br/>/data/walflow.db)]
   end
 
   SOURCE[(Customer PostgreSQL / Neon<br/>WAL, publication, slot, selected tables)]
@@ -47,7 +47,7 @@ flowchart TB
 
 | Application | Folder | Audience | Role |
 | --- | --- | --- | --- |
-| Customer console | `web/` | Customer operating CDC Lite | Manages sources, pipelines, sinks, events, and health. Its static output is embedded in the Go server. |
+| Customer console | `web/` | Customer operating Walflow | Manages sources, pipelines, sinks, events, and health. Its static output is embedded in the Go server. |
 | Public website | `website/` | Recruiter/developer/public user | Landing page and Fumadocs documentation. It does not access customer sources or metadata. |
 
 The separation is intentional: customer operations are private and self-hosted; public documentation can be deployed independently.
@@ -133,7 +133,7 @@ stateDiagram-v2
 
 ### Central reliability invariant
 
-**CDC Lite must persist the committed event in Redis before acknowledging the related PostgreSQL LSN.**
+**Walflow must persist the committed event in Redis before acknowledging the related PostgreSQL LSN.**
 
 If PostgreSQL were acknowledged first, a crash between acknowledgement and Redis write could lose a source event permanently. The implemented order can instead produce a duplicate after a crash/reconnect. That is intentional **at-least-once delivery**. Stable IDs (`commit_lsn:sequence`) let a receiver deduplicate.
 

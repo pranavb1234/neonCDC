@@ -1,4 +1,4 @@
-# Scaling CDC Lite to millions of users: an honest roadmap
+# Scaling Walflow to millions of users: an honest roadmap
 
 ## First: what “millions” means
 

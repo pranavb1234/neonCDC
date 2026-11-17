@@ -1,9 +1,9 @@
 ---
-title: CDC Lite documentation
+title: Walflow documentation
 description: Run PostgreSQL change data capture locally and deliver committed changes to webhooks.
 ---
 
-CDC Lite watches selected PostgreSQL tables for committed `INSERT`, `UPDATE`, and `DELETE` changes. It buffers each committed event in Redis and delivers it to configured webhook sinks.
+Walflow watches selected PostgreSQL tables for committed `INSERT`, `UPDATE`, and `DELETE` changes. It buffers each committed event in Redis and delivers it to configured webhook sinks.
 
 ## Start here
 
@@ -15,4 +15,4 @@ CDC Lite watches selected PostgreSQL tables for committed `INSERT`, `UPDATE`, an
 
 ## Delivery guarantee
 
-CDC Lite writes a committed transaction to Redis before acknowledging its PostgreSQL LSN. Recovery and retry can still cause duplicates, so receivers must deduplicate with `X-CDC-Event-Id`.
+Walflow writes a committed transaction to Redis before acknowledging its PostgreSQL LSN. Recovery and retry can still cause duplicates, so receivers must deduplicate with `X-CDC-Event-Id`.

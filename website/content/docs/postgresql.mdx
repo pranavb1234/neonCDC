@@ -3,9 +3,9 @@ title: Connect PostgreSQL
 description: Save, test, and safely browse a source database.
 ---
 
-Open **Databases**, select **Add Database**, enter a display name and connection string, then choose **Test Connection**. CDC Lite tests SQL connectivity and logical replication separately. Save only after both pass.
+Open **Databases**, select **Add Database**, enter a display name and connection string, then choose **Test Connection**. Walflow tests SQL connectivity and logical replication separately. Save only after both pass.
 
-Saved connection strings are encrypted in `cdc-lite-data` and are never returned by the API or logs.
+Saved connection strings are encrypted in `walflow-data` and are never returned by the API or logs.
 
 ## Requirements
 
@@ -15,7 +15,7 @@ Saved connection strings are encrypted in `cdc-lite-data` and are never returned
 - Remote databases need TLS: `sslmode=require`, `sslmode=verify-ca`, or `sslmode=verify-full`.
 - Use a direct endpoint, not a transaction-pooling or `-pooler` endpoint.
 
-For Neon, enable Logical Replication in project settings and use a direct, unpooled endpoint. CDC Lite does not fall back to polling.
+For Neon, enable Logical Replication in project settings and use a direct, unpooled endpoint. Walflow does not fall back to polling.
 
 ## Browse tables
 

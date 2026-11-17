@@ -3,7 +3,7 @@ import { RootProvider } from "fumadocs-ui/provider/next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "CDC Lite — Every CHANGE has a destination",
+  title: "Walflow — Every CHANGE has a destination",
   description: "Capture every change in your PostgreSQL database and stream it wherever it needs to go. Self-hosted, reliable, and completely under your control.",
 };
 

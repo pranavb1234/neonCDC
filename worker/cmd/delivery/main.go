@@ -18,9 +18,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pranavb1234/neonCDC/worker/internal/config"
-	"github.com/pranavb1234/neonCDC/worker/internal/logging"
-	rediscache "github.com/pranavb1234/neonCDC/worker/internal/redis"
+	"github.com/pranavb1234/walflow/worker/internal/config"
+	"github.com/pranavb1234/walflow/worker/internal/logging"
+	rediscache "github.com/pranavb1234/walflow/worker/internal/redis"
 	"github.com/redis/go-redis/v9"
 )
 

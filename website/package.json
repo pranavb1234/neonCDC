@@ -1,5 +1,5 @@
 {
-  "name": "cdc-lite-website",
+  "name": "walflow-website",
   "private": true,
   "scripts": {
     "dev": "next dev",

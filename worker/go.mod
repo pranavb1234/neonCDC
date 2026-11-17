@@ -1,4 +1,4 @@
-module github.com/pranavb1234/neonCDC/worker
+module github.com/pranavb1234/walflow/worker
 
 go 1.23.0
 

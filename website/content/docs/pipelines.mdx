@@ -3,8 +3,8 @@ title: Create a CDC pipeline
 description: Select tables and begin reading committed PostgreSQL changes.
 ---
 
-Browse a saved database, select eligible tables, choose **Create Pipeline**, name it, review the selection, and create it. CDC Lite validates the tables and logical replication prerequisites before creating its publication and replication slot.
+Browse a saved database, select eligible tables, choose **Create Pipeline**, name it, review the selection, and create it. Walflow validates the tables and logical replication prerequisites before creating its publication and replication slot.
 
-This release supports one running pipeline per installation. Other pipelines may be saved but must remain stopped until the active one is stopped. Stopping preserves its slot and publication; deleting a stopped pipeline removes those CDC Lite-managed resources.
+This release supports one running pipeline per installation. Other pipelines may be saved but must remain stopped until the active one is stopped. Stopping preserves its slot and publication; deleting a stopped pipeline removes those Walflow-managed resources.
 
 Only committed `INSERT`, `UPDATE`, and `DELETE` changes to selected tables are captured. Initial snapshots and schema evolution are not included.

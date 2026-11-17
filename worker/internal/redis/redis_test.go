@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/pranavb1234/neonCDC/worker/internal/replication"
+	"github.com/pranavb1234/walflow/worker/internal/replication"
 )
 
 func TestStreamValuesContainEventMetadataAndJSONPayload(t *testing.T) {

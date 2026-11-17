@@ -1,4 +1,4 @@
 {
-  "title": "CDC Lite",
+  "title": "Walflow",
   "pages": ["index", "quick-start", "postgresql", "pipelines", "webhooks", "operations"]
 }

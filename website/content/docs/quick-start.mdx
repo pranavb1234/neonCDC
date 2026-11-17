@@ -1,17 +1,17 @@
 ---
 title: Quick start
-description: Install the Docker Compose package and open CDC Lite.
+description: Install the Docker Compose package and open Walflow.
 ---
 
 ## What Compose starts
 
-`docker compose up -d` starts `cdc-lite-server` (the console, connector, and delivery worker) and `redis` (the internal event buffer). PostgreSQL is not started: connect your existing source through the console.
+`docker compose up -d` starts `walflow-server` (the console, connector, and delivery worker) and `redis` (the internal event buffer). PostgreSQL is not started: connect your existing source through the console.
 
-The console runs at [http://localhost:3000](http://localhost:3000). The Docker Compose package stores configuration in the `cdc-lite-data` volume and Redis data in `cdc-lite-redis-data`.
+The console runs at [http://localhost:3000](http://localhost:3000). The Docker Compose package stores configuration in the `walflow-data` volume and Redis data in `walflow-redis-data`.
 
 ## Install
 
-You need Docker Desktop with Docker Compose on Windows or macOS, or Docker Engine plus Compose on Linux. You also need a published CDC Lite image reference from the publisher. Go, Node.js, Redis, and PostgreSQL are not required locally.
+You need Docker Desktop with Docker Compose on Windows or macOS, or Docker Engine plus Compose on Linux. You also need a published Walflow image reference from the publisher. Go, Node.js, Redis, and PostgreSQL are not required locally.
 
 Extract the Docker Compose ZIP, open PowerShell in the extracted folder, and run:
 
@@ -19,7 +19,7 @@ Extract the Docker Compose ZIP, open PowerShell in the extracted folder, and run
 Copy-Item .env.example .env
 ```
 
-Set `CDC_LITE_IMAGE`, `ADMIN_EMAIL`, and a unique `ADMIN_PASSWORD` of at least 12 characters in `.env`.
+Set `WALFLOW_IMAGE`, `ADMIN_EMAIL`, and a unique `ADMIN_PASSWORD` of at least 12 characters in `.env`.
 
 Generate `APP_ENCRYPTION_KEY` once:
 
@@ -29,13 +29,13 @@ $bytes = New-Object byte[] 32
 [Convert]::ToBase64String($bytes)
 ```
 
-Keep the key: it encrypts saved connection strings and webhook secrets. Start CDC Lite:
+Keep the key: it encrypts saved connection strings and webhook secrets. Start Walflow:
 
 ```powershell
 docker compose up -d
 docker compose ps
 ```
 
-When `cdc-lite-server` is healthy, open [http://localhost:3000](http://localhost:3000).
+When `walflow-server` is healthy, open [http://localhost:3000](http://localhost:3000).
 
 The first startup saves an administrator email and password hash. The current release does not yet enforce a login screen, so run it only on a trusted local machine or protected private network.

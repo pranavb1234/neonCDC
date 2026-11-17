@@ -1,8 +1,8 @@
-# How to explain CDC Lite in an interview
+# How to explain Walflow in an interview
 
 ## 30-second version
 
-“CDC Lite is a self-hosted PostgreSQL change-data-capture project. It reads committed database changes through PostgreSQL logical replication and the `pgoutput` protocol, buffers them in Redis Streams, and delivers signed webhook events. I built the Go replication and delivery backend, a Next.js operations console, SQLite-backed encrypted configuration, Docker packaging, and a separate Fumadocs documentation site.”
+“Walflow is a self-hosted PostgreSQL change-data-capture project. It reads committed database changes through PostgreSQL logical replication and the `pgoutput` protocol, buffers them in Redis Streams, and delivers signed webhook events. I built the Go replication and delivery backend, a Next.js operations console, SQLite-backed encrypted configuration, Docker packaging, and a separate Fumadocs documentation site.”
 
 ## 2-minute walkthrough
 

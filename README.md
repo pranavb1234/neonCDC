@@ -1,10 +1,10 @@
-# CDC Lite
+# Walflow
 
 A small local demo of PostgreSQL Change Data Capture: a Go connector reads committed row changes from Neon PostgreSQL, stores JSON events in Redis Streams, a Go worker posts them to a webhook, and a Next.js dashboard displays them.
 
 ## Resume highlights
 
-- Built **CDC Lite**, a self-hosted PostgreSQL Change Data Capture platform using **Go, PostgreSQL logical replication (`pgoutput`), Redis Streams, Next.js, SQLite, and Docker Compose**.
+- Built **Walflow**, a self-hosted PostgreSQL Change Data Capture platform using **Go, PostgreSQL logical replication (`pgoutput`), Redis Streams, Next.js, SQLite, and Docker Compose**.
 - Implemented a Go CDC connector that decodes committed `INSERT`, `UPDATE`, and `DELETE` changes, buffers rows until PostgreSQL `Commit`, and publishes to Redis before acknowledging the LSN.
 - Designed an **at-least-once delivery** workflow with stable `commit_lsn:sequence` event IDs, allowing webhook consumers to deduplicate events after retry or recovery.
 - Developed HMAC-SHA256 signed webhook delivery with timestamped headers, Redis consumer groups, bounded delivery history, and evidence-based sink health states.
@@ -13,7 +13,7 @@ A small local demo of PostgreSQL Change Data Capture: a Go connector reads commi
 - Packaged the server as a non-root Docker image and Docker Compose release with persistent volumes, health checks, graceful shutdown, and an installable customer ZIP.
 - Created a separate Fumadocs landing and documentation website for technical onboarding and product documentation.
 
-**One-line project description:** CDC Lite is a self-hosted event-driven PostgreSQL CDC platform that streams committed database changes through Redis Streams to HMAC-signed webhooks, with a Go backend and Next.js monitoring dashboard.
+**One-line project description:** Walflow is a self-hosted event-driven PostgreSQL CDC platform that streams committed database changes through Redis Streams to HMAC-signed webhooks, with a Go backend and Next.js monitoring dashboard.
 
 ## Engineering documentation
 
@@ -85,7 +85,7 @@ go run ./cmd/connector
 
 ## Enable CDC reading
 
-Enable **Logical Replication** in Neon project settings before starting the connector. The connector checks that `wal_level` is `logical`, confirms the connected role has `REPLICATION`, creates `cdc_lite_publication` for the sample `users` and `orders` tables if needed, and creates or reuses `cdc_lite_slot` with `pgoutput`.
+Enable **Logical Replication** in Neon project settings before starting the connector. The connector checks that `wal_level` is `logical`, confirms the connected role has `REPLICATION`, creates `walflow_publication` for the sample `users` and `orders` tables if needed, and creates or reuses `walflow_slot` with `pgoutput`.
 
 You can override these names with `PUBLICATION_NAME` and `REPLICATION_SLOT`. Use a role created through Neon Console, CLI, or API: Neon documents that SQL-created roles cannot be granted the required replication privilege.
 
@@ -122,7 +122,7 @@ Open `http://localhost:3000`. The Live Events page receives new Redis Stream ent
 
 ## Initialize self-hosted metadata
 
-The future self-hosted server stores its administrator, saved connection metadata, pipelines, sinks, and delivery history in SQLite. The database is stored in the `cdc-lite-data` Docker volume; Redis remains the event buffer.
+The future self-hosted server stores its administrator, saved connection metadata, pipelines, sinks, and delivery history in SQLite. The database is stored in the `walflow-data` Docker volume; Redis remains the event buffer.
 
 Copy the `APP_ENCRYPTION_KEY` placeholder from `metadata.env.example` into your local `.env`, replacing it with a base64-encoded random 32-byte key. Do not change this key after saving connections or sink secrets, because existing encrypted values would become unreadable.
 
@@ -150,25 +150,25 @@ The metadata CLI is intentionally a one-shot tool in this step; it does not yet 
 
 ## Manage saved PostgreSQL databases
 
-In the packaged server console, open **Databases** and add a display name plus a PostgreSQL connection string. CDC Lite tests ordinary SQL connectivity and then checks `wal_level=logical` and the current role's `REPLICATION` permission separately. A successful SQL login alone is not treated as CDC-ready.
+In the packaged server console, open **Databases** and add a display name plus a PostgreSQL connection string. Walflow tests ordinary SQL connectivity and then checks `wal_level=logical` and the current role's `REPLICATION` permission separately. A successful SQL login alone is not treated as CDC-ready.
 
 For remote sources, provide `sslmode=require`, `sslmode=verify-ca`, or `sslmode=verify-full`. Use a direct, non-pooled endpoint for logical replication. The connection string is encrypted with `APP_ENCRYPTION_KEY` before it is stored, is never returned by the API, and is not logged. Keep that key stable across restarts and restore it with the metadata volume backup; otherwise saved connections cannot be decrypted.
 
 Saving a database never starts a CDC pipeline automatically.
 
-Selecting **Browse** on a saved database opens a read-only inspection view. It lists non-system schemas and base tables, then shows column metadata, primary-key columns, replica identity, and at most 25 preview rows. CDC Lite quotes selected schema/table identifiers, uses a short read-only transaction, and never accepts browser-provided SQL. It does not modify source schemas or table data.
+Selecting **Browse** on a saved database opens a read-only inspection view. It lists non-system schemas and base tables, then shows column metadata, primary-key columns, replica identity, and at most 25 preview rows. Walflow quotes selected schema/table identifiers, uses a short read-only transaction, and never accepts browser-provided SQL. It does not modify source schemas or table data.
 
 ## Create a CDC pipeline
 
-From a saved database's **Browse** screen, select a schema and one or more tables, then choose **Create Pipeline**. CDC Lite validates that the tables still exist and verifies logical replication prerequisites again before it creates a unique publication and replication slot. It does not change table replica identity; tables without a primary key or `REPLICA IDENTITY FULL` remain clearly flagged in the table inspector.
+From a saved database's **Browse** screen, select a schema and one or more tables, then choose **Create Pipeline**. Walflow validates that the tables still exist and verifies logical replication prerequisites again before it creates a unique publication and replication slot. It does not change table replica identity; tables without a primary key or `REPLICA IDENTITY FULL` remain clearly flagged in the table inspector.
 
-The first customer release supports **one active pipeline per CDC Lite installation**. Additional pipelines may be saved but must remain stopped until the active one is stopped. Stopping a pipeline preserves its publication and slot for a restart. Delete is available only after a pipeline is stopped, then removes only that pipeline's deterministically named publication and slot.
+The first customer release supports **one active pipeline per Walflow installation**. Additional pipelines may be saved but must remain stopped until the active one is stopped. Stopping a pipeline preserves its publication and slot for a restart. Delete is available only after a pipeline is stopped, then removes only that pipeline's deterministically named publication and slot.
 
 ## Add a Webhook sink
 
-Open **Sinks**, select **Create Sink**, choose the source pipeline, then enter an HTTPS webhook URL. You may enter a signing secret or leave it blank for CDC Lite to generate one. A generated secret is shown only once; save it in the receiving application before closing the message. Secrets are encrypted in the metadata volume and are never returned in the sink list.
+Open **Sinks**, select **Create Sink**, choose the source pipeline, then enter an HTTPS webhook URL. You may enter a signing secret or leave it blank for Walflow to generate one. A generated secret is shown only once; save it in the receiving application before closing the message. Secrets are encrypted in the metadata volume and are never returned in the sink list.
 
-Each sink receives events from its selected pipeline only. CDC Lite sends the exact JSON event body with `X-CDC-Event-Id`, `X-CDC-Timestamp`, and `X-CDC-Signature: v1=<HMAC-SHA256>` headers. Redirects and loopback, private, link-local, and cloud-metadata destinations are blocked; hostnames are checked again immediately before connection.
+Each sink receives events from its selected pipeline only. Walflow sends the exact JSON event body with `X-CDC-Event-Id`, `X-CDC-Timestamp`, and `X-CDC-Signature: v1=<HMAC-SHA256>` headers. Redirects and loopback, private, link-local, and cloud-metadata destinations are blocked; hostnames are checked again immediately before connection.
 
 Delivery is sequential. A failed request remains pending in Redis and is retried after a short delay; there is no retry schedule or dead-letter queue in this first release. Duplicate webhook deliveries remain possible.
 
@@ -189,10 +189,10 @@ For the included local Go receiver, expose `sample/receiver` through a public HT
 Build the customer server image from the repository root:
 
 ```powershell
-docker build -t cdc-lite-server:local .
+docker build -t walflow-server:local .
 ```
 
-Before customers can use the ZIP, publish that image to a container registry and give them its exact image reference. The Compose package intentionally requires `CDC_LITE_IMAGE` instead of guessing a registry or image name.
+Before customers can use the ZIP, publish that image to a container registry and give them its exact image reference. The Compose package intentionally requires `WALFLOW_IMAGE` instead of guessing a registry or image name.
 
 Create a ZIP containing only the Docker Compose package files:
 
@@ -203,9 +203,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\package-release.ps1 -Version 
 The command prints the ZIP path and SHA-256 checksum. Verify its contents:
 
 ```powershell
-Expand-Archive -LiteralPath .\dist\CDC-Lite-Docker-Compose-0.1.0.zip -DestinationPath .\dist\verify -Force
+Expand-Archive -LiteralPath .\dist\Walflow-Docker-Compose-0.1.0.zip -DestinationPath .\dist\verify -Force
 Get-ChildItem -Recurse -File .\dist\verify
-Get-FileHash -Algorithm SHA256 .\dist\CDC-Lite-Docker-Compose-0.1.0.zip
+Get-FileHash -Algorithm SHA256 .\dist\Walflow-Docker-Compose-0.1.0.zip
 ```
 
 The ZIP contains only `docker-compose.yml`, `.env.example`, and `README.md` inside its top-level release folder.

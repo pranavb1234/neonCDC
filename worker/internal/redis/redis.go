@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/pranavb1234/neonCDC/worker/internal/replication"
+	"github.com/pranavb1234/walflow/worker/internal/replication"
 	"github.com/redis/go-redis/v9"
 )
 

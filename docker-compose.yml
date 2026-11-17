@@ -13,11 +13,11 @@ services:
       context: .
       dockerfile: worker/Dockerfile.metadata
     environment:
-      METADATA_DB_PATH: /data/cdc-lite.db
+      METADATA_DB_PATH: /data/walflow.db
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-}
     volumes:
-      - cdc-lite-data:/data
+      - walflow-data:/data
 
 volumes:
   redis-data:
-  cdc-lite-data:
+  walflow-data:

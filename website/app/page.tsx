@@ -54,7 +54,7 @@ export default function LandingPage() {
                 Spin up in less than 60 seconds
               </h2>
               <p className="mt-3 text-sm text-zinc-400 leading-relaxed">
-                Run CDC Lite locally with Docker Compose or embed it in your Kubernetes cluster. Connect any existing PostgreSQL 12+ database with a single publication.
+                Run Walflow locally with Docker Compose or embed it in your Kubernetes cluster. Connect any existing PostgreSQL 12+ database with a single publication.
               </p>
               <div className="mt-6 flex flex-wrap gap-4">
                 <Link
@@ -64,7 +64,7 @@ export default function LandingPage() {
                   Read Installation Guide
                 </Link>
                 <a
-                  href="https://github.com/pranavb1234/neonCDC"
+                  href="https://github.com/pranavb1234/walflow"
                   target="_blank"
                   rel="noreferrer"
                   className="rounded-lg border border-emerald-500/30 px-5 py-2.5 text-xs font-medium text-emerald-300 hover:bg-emerald-950/40 transition-colors"
@@ -86,10 +86,10 @@ export default function LandingPage() {
               </div>
               <div className="space-y-1.5 text-zinc-300">
                 <p className="text-zinc-500"># Clone and start with Docker</p>
-                <p><span className="text-emerald-500">$</span> git clone https://github.com/pranavb1234/neonCDC.git</p>
-                <p><span className="text-emerald-500">$</span> cd neonCDC</p>
+                <p><span className="text-emerald-500">$</span> git clone https://github.com/pranavb1234/walflow.git</p>
+                <p><span className="text-emerald-500">$</span> cd walflow</p>
                 <p><span className="text-emerald-500">$</span> docker compose up -d</p>
-                <p className="pt-2 text-emerald-400 font-pixel text-[11px]">&gt; [OK] CDC Lite streaming from postgres://localhost:5432</p>
+                <p className="pt-2 text-emerald-400 font-pixel text-[11px]">&gt; [OK] Walflow streaming from postgres://localhost:5432</p>
               </div>
             </div>
           </div>
@@ -100,7 +100,7 @@ export default function LandingPage() {
       <footer className="border-t border-emerald-950/50 bg-[#030604] py-12">
         <div className="mx-auto flex max-w-7xl flex-col sm:flex-row items-center justify-between gap-6 px-6 text-xs text-zinc-400">
           <div className="flex items-center gap-2.5">
-            <span className="font-semibold text-white">CDC <span className="font-pixel text-emerald-400">Lite</span></span>
+            <span className="font-semibold text-white">Wal<span className="font-pixel text-emerald-400">flow</span></span>
             <span>—</span>
             <span>Self-hosted PostgreSQL Change Data Capture</span>
           </div>
@@ -116,7 +116,7 @@ export default function LandingPage() {
               Operations
             </Link>
             <a
-              href="https://github.com/pranavb1234/neonCDC"
+              href="https://github.com/pranavb1234/walflow"
               target="_blank"
               rel="noreferrer"
               className="hover:text-emerald-300 transition-colors"

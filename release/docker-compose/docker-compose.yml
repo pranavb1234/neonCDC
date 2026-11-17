@@ -11,8 +11,8 @@ services:
       timeout: 3s
       retries: 5
 
-  cdc-lite-server:
-    image: ${CDC_LITE_IMAGE:?Set CDC_LITE_IMAGE in .env to a published CDC Lite image}
+  walflow-server:
+    image: ${WALFLOW_IMAGE:?Set WALFLOW_IMAGE in .env to a published Walflow image}
     restart: unless-stopped
     depends_on:
       redis:
@@ -20,14 +20,14 @@ services:
     environment:
       PORT: "3000"
       REDIS_URL: redis://redis:6379
-      METADATA_DB_PATH: /data/cdc-lite.db
+      METADATA_DB_PATH: /data/walflow.db
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
     ports:
-      - "${CDC_LITE_PORT:-3000}:3000"
+      - "${WALFLOW_PORT:-3000}:3000"
     volumes:
-      - cdc-lite-data:/data
+      - walflow-data:/data
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:3000/healthz"]
       interval: 10s
@@ -37,6 +37,6 @@ services:
 
 volumes:
   redis-data:
-    name: cdc-lite-redis-data
-  cdc-lite-data:
-    name: cdc-lite-data
+    name: walflow-redis-data
+  walflow-data:
+    name: walflow-data

@@ -1,4 +1,4 @@
-# CDC Lite component and function reference
+# Walflow component and function reference
 
 This document is a code-level map. It explains what calls what in the current implementation, without pretending every helper is a separate service.
 

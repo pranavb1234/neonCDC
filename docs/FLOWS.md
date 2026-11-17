@@ -1,4 +1,4 @@
-# CDC Lite application flows
+# Walflow application flows
 
 ## How to read this document
 
@@ -6,8 +6,8 @@ Each flow names the current browser component, Go handler, store method, or pack
 
 ## 1. First startup and metadata initialization
 
-1. Docker Compose starts `redis` and `cdc-lite-server`.
-2. The server opens `/data/cdc-lite.db` in the persistent `cdc-lite-data` volume.
+1. Docker Compose starts `redis` and `walflow-server`.
+2. The server opens `/data/walflow.db` in the persistent `walflow-data` volume.
 3. SQLite migrations create administrator, source connection, pipeline, sink, and delivery-attempt tables.
 4. `APP_ENCRYPTION_KEY` is loaded and used only in memory to encrypt/decrypt connection strings and webhook secrets.
 5. On the first run, `ADMIN_EMAIL` and `ADMIN_PASSWORD` create one administrator record; only the bcrypt hash is stored.
@@ -42,11 +42,11 @@ Each flow names the current browser component, Go handler, store method, or pack
 ## 5. Decode and publish a committed source change
 
 1. PostgreSQL sends `Begin`, relation metadata, row messages, and `Commit` through logical replication.
-2. CDC Lite decodes relation, insert, update, and delete messages. It supports the common types used by sample tables: text, integers, booleans, numeric values, timestamps, and SQL `NULL`.
+2. Walflow decodes relation, insert, update, and delete messages. It supports the common types used by sample tables: text, integers, booleans, numeric values, timestamps, and SQL `NULL`.
 3. Row changes are held in a transaction buffer; nothing is emitted during an uncommitted transaction.
 4. On `Commit`, each event receives a stable ID: `commit_lsn:sequence`.
 5. The batch is written to Redis Stream `cdc:events` in transaction order, with the pipeline ID and JSON payload.
-6. Only after Redis succeeds does CDC Lite send PostgreSQL standby status and acknowledge that LSN.
+6. Only after Redis succeeds does Walflow send PostgreSQL standby status and acknowledge that LSN.
 
 This ordering is important: a Redis outage causes a replay rather than silently losing the source transaction.
 
@@ -55,7 +55,7 @@ This ordering is important: a Redis outage causes a replay rather than silently 
 1. The delivery loop reads `cdc:events` using the `server-delivery` Redis consumer group.
 2. It uses the stream's `pipeline_id` to load only enabled sinks attached to that same pipeline.
 3. The sink URL is validated against SSRF rules before it is used and again at dial time after DNS resolution.
-4. CDC Lite generates a timestamp and calculates HMAC-SHA256 over `timestamp + "." + raw JSON body`.
+4. Walflow generates a timestamp and calculates HMAC-SHA256 over `timestamp + "." + raw JSON body`.
 5. It sends `X-CDC-Event-Id`, `X-CDC-Timestamp`, and `X-CDC-Signature` headers.
 6. A 2xx response is recorded as success and the Redis message is acknowledged. Failures are recorded safely and left pending for later retry.
 
