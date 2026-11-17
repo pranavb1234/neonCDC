@@ -1,51 +1,73 @@
-# CDC Lite self-hosted installation
+# CDC Lite: self-hosted quick start
 
-CDC Lite watches changes in a PostgreSQL database, stores events safely in Redis, and sends them to configured webhooks. This package starts CDC Lite and Redis locally. It does **not** start PostgreSQL: you connect your own source database through CDC Lite.
+CDC Lite watches selected tables in your PostgreSQL database for committed `INSERT`, `UPDATE`, and `DELETE` changes. It turns those changes into JSON events, buffers them in Redis, and sends them to the webhook sinks that you configure in the web console.
 
-## Before you start
+CDC Lite does not host PostgreSQL and does not copy an initial snapshot of your data. You connect an existing PostgreSQL database and choose the tables to capture.
 
-Install Docker Desktop with Docker Compose (Windows/macOS), or Docker Engine with the Docker Compose plugin (Linux). You do not need Go, Node.js, or Redis installed on your computer.
+## What this package starts
 
-The CDC Lite image must be published to a container registry before customers can pull it. Ask the CDC Lite publisher for the exact image reference; this ZIP intentionally does not invent one.
+`docker compose up -d` starts two containers:
 
-## Install
+- `cdc-lite-server`: the web console, API, CDC connector, and sequential webhook delivery worker.
+- `redis`: the internal event buffer. It is not exposed to the host computer.
 
-1. Download and extract the CDC Lite Docker Compose ZIP.
-2. Open PowerShell in the extracted `CDC-Lite-Docker-Compose-<version>` folder.
-3. Create your local configuration file:
+The web console is available at [http://localhost:3000](http://localhost:3000). Port `3000` is the supported default in this package.
+
+Your saved configuration is stored in the Docker volume `cdc-lite-data`. Redis events are stored in `cdc-lite-redis-data`.
+
+## Requirements
+
+- Docker Desktop with Docker Compose on Windows or macOS, or Docker Engine plus the Docker Compose plugin on Linux.
+- Network access from the CDC Lite container to your PostgreSQL database and webhook endpoint.
+- A PostgreSQL role that can use logical replication for the source database.
+- A CDC Lite container image reference supplied by the publisher.
+
+You do not need to install Go, Node.js, Redis, or PostgreSQL locally.
+
+## Download, extract, and configure
+
+1. Obtain the CDC Lite Docker Compose ZIP and its SHA-256 checksum from the CDC Lite publisher. The ZIP does not include the server image; the publisher must provide an image reference separately.
+2. Extract the ZIP using File Explorer's **Extract All** action.
+3. Open PowerShell in the extracted folder. It contains `docker-compose.yml`, `.env.example`, and this README.
+4. Create your private configuration file:
 
    ```powershell
    Copy-Item .env.example .env
    ```
 
-4. Edit `.env`. Set `CDC_LITE_IMAGE` to the exact published image reference you were given. Keep the remaining values private.
-5. Generate an encryption key:
+5. Edit `.env` in a text editor. Set these four values:
 
-   ```powershell
-   $bytes = New-Object byte[] 32
-   [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
-   [Convert]::ToBase64String($bytes)
-   ```
+   - `CDC_LITE_IMAGE`: the exact published image reference supplied by the publisher.
+   - `APP_ENCRYPTION_KEY`: a persistent Base64 key generated in the next step.
+   - `ADMIN_EMAIL`: your administrator email address.
+   - `ADMIN_PASSWORD`: a unique password with at least 12 characters.
 
-   Put that output in `APP_ENCRYPTION_KEY`. Keep this value forever. It encrypts saved database connection strings and webhook secrets; changing it later prevents CDC Lite from reading old saved values.
-6. Set `ADMIN_EMAIL` and `ADMIN_PASSWORD`. Use a unique password of at least 12 characters.
-7. Start CDC Lite:
+Generate the encryption key once:
 
-   ```powershell
-   docker compose up -d
-   ```
+```powershell
+$bytes = New-Object byte[] 32
+[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+[Convert]::ToBase64String($bytes)
+```
 
-8. Open the web console at [http://localhost:3000](http://localhost:3000).
+Copy the output into `APP_ENCRYPTION_KEY`. Keep it in a password manager or another secure backup location. CDC Lite uses it to encrypt saved database connection strings and webhook signing secrets. If you lose or change it, saved connections and secrets cannot be read after a restore.
 
-Redis is private to Docker and is not exposed to your computer. Customer metadata is stored in the `cdc-lite-data` Docker volume. Redis stream data is stored in `cdc-lite-redis-data`.
+Do not commit `.env`, send it in support messages, or share it with other users.
 
-## Administrator credentials
+## Start and open CDC Lite
 
-The first startup creates the administrator from the values in `.env`; CDC Lite stores only a password hash. It never prints the password in logs.
+From the extracted folder:
 
-Keep the initial email and password in your password manager. After the first successful startup, remove the `ADMIN_EMAIL` and `ADMIN_PASSWORD` lines from `.env`; the stored administrator remains available. The current server release creates this administrator record for the upcoming login UI.
+```powershell
+docker compose up -d
+docker compose ps
+```
 
-To change the stored administrator password, run this from the extracted package folder. The password is read from standard input and is never passed as a command-line argument:
+Wait until `cdc-lite-server` reports `healthy`, then open [http://localhost:3000](http://localhost:3000).
+
+The first startup stores the administrator email and a password hash in `cdc-lite-data`; it never logs the password. The current release creates this administrator record for the console's administrator model. It does **not yet enforce a login screen**, so run it only on a trusted local machine or protected private network.
+
+After the initial startup succeeds, remove `ADMIN_EMAIL` and `ADMIN_PASSWORD` from `.env`. The stored administrator remains. To change the stored password later:
 
 ```powershell
 $securePassword = Read-Host "New administrator password" -AsSecureString
@@ -59,9 +81,96 @@ try {
 }
 ```
 
-## Everyday commands
+## Add a PostgreSQL database
 
-Check status and logs:
+1. Open **Databases** in the console and choose **Add Database**.
+2. Enter a display name and your PostgreSQL connection string.
+3. Choose **Test Connection**. CDC Lite tests ordinary SQL connectivity and logical replication separately.
+4. Save only after both checks pass.
+
+For remote databases, use TLS in the connection string (`sslmode=require`, `sslmode=verify-ca`, or `sslmode=verify-full`). Logical replication needs a direct database endpoint. Do not use a transaction-pooling or `-pooler` endpoint for PostgreSQL logical replication.
+
+### Logical replication prerequisites and provider caveats
+
+- PostgreSQL must have `wal_level=logical`.
+- The connecting role needs the PostgreSQL `REPLICATION` attribute and enough access to the selected tables.
+- The provider must permit logical replication slots and publications. Some hosted PostgreSQL plans do not.
+- Neon must have Logical Replication enabled in its project settings and normally requires a direct, unpooled connection endpoint.
+- CDC Lite does not fall back to polling. If a prerequisite fails, correct it at the source before creating a pipeline.
+
+## Browse tables safely
+
+Open a saved database and choose **Browse**. CDC Lite shows non-system schemas, tables, column information, primary keys, replica identity, and a small read-only row preview. The browser never accepts arbitrary SQL and does not modify source data.
+
+Tables without a primary key or `REPLICA IDENTITY FULL` are flagged because complete `UPDATE` and `DELETE` capture may not be available.
+
+## Create and run a pipeline
+
+1. In the database browser, select one or more eligible tables.
+2. Choose **Create Pipeline** and provide a name.
+3. Review the selected tables, then create the pipeline.
+4. CDC Lite validates the source again, creates its publication and logical replication slot, and starts capture.
+
+The first release supports **one running pipeline** per CDC Lite installation. You may save additional pipelines, but stop the active one before starting another. Stopping a pipeline preserves its slot and publication. Delete is only available after stopping it, and removes its CDC Lite-managed slot and publication.
+
+Important: CDC Lite publishes a committed transaction to Redis before it acknowledges the corresponding PostgreSQL LSN. This avoids acknowledging an event that was not buffered, but a restart or retry can still cause duplicate events. Webhook receivers must deduplicate using `X-CDC-Event-Id`.
+
+## Create a Webhook sink
+
+1. Open **Sinks** and choose **Create Sink**. This release opens the Webhook sink setup directly.
+2. Choose the source pipeline and enter an HTTPS endpoint.
+3. Enter a signing secret, or leave it blank for CDC Lite to generate one.
+4. Review the configuration and create the sink.
+
+CDC Lite displays a generated secret once only. Save it immediately; it is encrypted in `cdc-lite-data` and cannot be displayed later.
+
+For every request CDC Lite signs the exact JSON request body using HMAC-SHA256 over `timestamp + "." + body` and sends:
+
+```text
+X-CDC-Event-Id
+X-CDC-Timestamp
+X-CDC-Signature: v1=<hex HMAC-SHA256>
+```
+
+For safety, CDC Lite blocks webhook targets that resolve to loopback, private, link-local, or cloud-metadata addresses, and blocks redirects. Use a publicly reachable HTTPS endpoint.
+
+## Test delivery
+
+### Webhook.site
+
+1. Open [Webhook.site](https://webhook.site/) and create a unique request URL.
+2. Create an enabled sink using that HTTPS URL.
+3. Choose **Send Test Event** on the sink card. The request appears in Webhook.site and the sink should show a successful attempt.
+4. Start the linked pipeline and insert, update, or delete a row in one of its selected tables. The CDC event should appear in both Webhook.site and the sink delivery history.
+
+### Included sample receiver
+
+The included Go receiver listens only on `localhost`, which CDC Lite correctly blocks as a webhook destination. Run it and expose it through a public HTTPS tunnel, then use the tunnel URL for the sink:
+
+```powershell
+Set-Location sample\receiver
+go run .
+```
+
+The receiver verifies the HMAC signature and prints the event ID and operation. Do not weaken the SSRF protection just to send to localhost.
+
+## Sink health and delivery history
+
+Each sink card shows its associated pipeline, enabled state, recent attempts, last success, last failure, and a redacted error summary. A saved sink is not automatically Healthy.
+
+- **Healthy**: the newest observed delivery succeeded.
+- **Degraded**: the newest delivery failed, but there are earlier successful deliveries.
+- **Failing**: at least three recent deliveries all failed.
+- **Paused**: the sink is disabled.
+- **Unknown**: no delivery has been observed yet.
+
+The console keeps the newest 100 delivery records per sink and displays the newest 20. Records contain event ID, timestamp, result, optional HTTP status, and a safe error summary. They never contain secrets or event payloads.
+
+Delivery is sequential. On failure, the Redis event stays pending for a later retry; this release has no retry schedule, replay UI, or dead-letter queue.
+
+## Logs and troubleshooting
+
+Useful commands:
 
 ```powershell
 docker compose ps
@@ -69,23 +178,30 @@ docker compose logs -f cdc-lite-server
 docker compose logs -f redis
 ```
 
-Stop without deleting customer data:
+| Problem | What to check |
+| --- | --- |
+| `cdc-lite-server` does not start | Run `docker compose logs cdc-lite-server`. Confirm `CDC_LITE_IMAGE` points to an image you can pull and `APP_ENCRYPTION_KEY` is Base64 for exactly 32 random bytes. On first start both administrator values must be set. |
+| Database test says SQL works but CDC is unavailable | Enable logical replication, use a direct endpoint, and ensure the database role has `REPLICATION`. |
+| Connection fails | Confirm host, port, credentials, firewall rules, and TLS settings. The container—not just your browser—must reach the database. |
+| Pipeline does not capture a row | Confirm the pipeline is running and the changed table is selected by that pipeline. Only committed changes are captured. |
+| Sink stays Unknown | Use **Send Test Event**. A saved endpoint alone is not delivery evidence. |
+| Sink is Degraded or Failing | Inspect the redacted error and HTTP status, confirm the endpoint is public and returns a 2xx response, and verify the receiver accepts the HMAC headers. |
+| Webhook is not called for a CDC event | Confirm the sink is enabled and linked to the same running pipeline that captures the changed table. Follow `docker compose logs -f cdc-lite-server` and look for `webhook delivered` or `webhook delivery failed`. |
+
+## Update CDC Lite
+
+Edit `CDC_LITE_IMAGE` in `.env` to the newer image reference supplied by the publisher, then run:
 
 ```powershell
-docker compose down
-```
-
-Start again:
-
-```powershell
+docker compose pull
 docker compose up -d
 ```
 
-If startup fails, run `docker compose logs cdc-lite-server`. Check that `CDC_LITE_IMAGE` is a real published image reference, `APP_ENCRYPTION_KEY` is a base64 value for 32 random bytes, and the first startup has both administrator variables.
+Do not add `-v` when updating. Docker keeps both persistent volumes.
 
-## Backup and restore
+## Back up and restore
 
-Stop CDC Lite before copying its volumes:
+Stop CDC Lite before backup:
 
 ```powershell
 docker compose down
@@ -94,7 +210,7 @@ docker run --rm -v cdc-lite-data:/data -v "${backupPath}:/backup" alpine tar czf
 docker run --rm -v cdc-lite-redis-data:/data -v "${backupPath}:/backup" alpine tar czf /backup/cdc-lite-redis-data-backup.tar.gz -C /data .
 ```
 
-To restore, keep the same `APP_ENCRYPTION_KEY`, stop the application, then run:
+Keep the metadata backup and `APP_ENCRYPTION_KEY` together. To restore, use the same encryption key, stop the app, then run:
 
 ```powershell
 docker compose down
@@ -104,27 +220,18 @@ docker run --rm -v cdc-lite-redis-data:/data -v "${backupPath}:/backup" alpine s
 docker compose up -d
 ```
 
-## Update CDC Lite
+## Stop or uninstall
 
-Change `CDC_LITE_IMAGE` in `.env` to the newer published image reference, then run:
-
-```powershell
-docker compose pull
-docker compose up -d
-```
-
-Do not use `-v` during an update. Docker keeps both persistent volumes.
-
-## Uninstall
-
-To remove containers and networks but keep customer data for a later reinstall:
+Stop containers while keeping all customer data:
 
 ```powershell
 docker compose down
 ```
 
-Only when you intentionally want to permanently delete all saved CDC Lite metadata and Redis events:
+Only when you intentionally want to permanently delete all saved databases, pipeline configuration, sinks, delivery history, and buffered events:
 
 ```powershell
 docker compose down -v
 ```
+
+This deletion cannot be undone unless you made a backup.
