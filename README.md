@@ -2,6 +2,30 @@
 
 A small local demo of PostgreSQL Change Data Capture: a Go connector reads committed row changes from Neon PostgreSQL, stores JSON events in Redis Streams, a Go worker posts them to a webhook, and a Next.js dashboard displays them.
 
+## Resume highlights
+
+- Built **CDC Lite**, a self-hosted PostgreSQL Change Data Capture platform using **Go, PostgreSQL logical replication (`pgoutput`), Redis Streams, Next.js, SQLite, and Docker Compose**.
+- Implemented a Go CDC connector that decodes committed `INSERT`, `UPDATE`, and `DELETE` changes, buffers rows until PostgreSQL `Commit`, and publishes to Redis before acknowledging the LSN.
+- Designed an **at-least-once delivery** workflow with stable `commit_lsn:sequence` event IDs, allowing webhook consumers to deduplicate events after retry or recovery.
+- Developed HMAC-SHA256 signed webhook delivery with timestamped headers, Redis consumer groups, bounded delivery history, and evidence-based sink health states.
+- Built a Next.js operational console for database connection testing, safe schema/table browsing, row previews, pipeline management, live events over SSE, and webhook delivery inspection.
+- Secured customer metadata with SQLite foreign keys, encrypted PostgreSQL URLs and webhook secrets, bcrypt password hashes, error redaction, and SSRF protections for webhook targets.
+- Packaged the server as a non-root Docker image and Docker Compose release with persistent volumes, health checks, graceful shutdown, and an installable customer ZIP.
+- Created a separate Fumadocs landing and documentation website for technical onboarding and product documentation.
+
+**One-line project description:** CDC Lite is a self-hosted event-driven PostgreSQL CDC platform that streams committed database changes through Redis Streams to HMAC-signed webhooks, with a Go backend and Next.js monitoring dashboard.
+
+## Engineering documentation
+
+These documents are written for portfolio review and interview preparation:
+
+- [Architecture and repository map](docs/ARCHITECTURE.md)
+- [End-to-end application flows](docs/FLOWS.md)
+- [Interview walkthrough](docs/INTERVIEW_GUIDE.md)
+- [System design](docs/SYSTEM_DESIGN.md)
+- [How to scale beyond this student project](docs/SCALING_TO_MILLIONS.md)
+- [Security, trade-offs, and known limitations](docs/SECURITY_AND_LIMITATIONS.md)
+
 ## Public website and documentation
 
 The customer console in `web/` is separate from the public landing and documentation site in `website/`. The website uses Fumadocs, with its landing page at `/` and documentation at `/docs`.
