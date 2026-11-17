@@ -98,6 +98,7 @@ For remote databases, use TLS in the connection string (`sslmode=require`, `sslm
 - The connecting role needs the PostgreSQL `REPLICATION` attribute and enough access to the selected tables.
 - The provider must permit logical replication slots and publications. Some hosted PostgreSQL plans do not.
 - Neon must have Logical Replication enabled in its project settings and normally requires a direct, unpooled connection endpoint.
+- Supabase requires its direct connection string on port `5432` (`db.[ref].supabase.co`), not the connection pooler. Because Supabase direct endpoints resolve exclusively to IPv6 addresses, Docker Desktop must have IPv6 enabled in **Settings → Docker Engine** (`"ipv6": true, "fixed-cidr-v6": "2001:db8:1::/64", "ip6tables": true`); otherwise the container receives `Network unreachable`.
 - Walflow does not fall back to polling. If a prerequisite fails, correct it at the source before creating a pipeline.
 
 ## Browse tables safely
@@ -185,6 +186,7 @@ docker compose logs -f redis
 | `walflow-server` does not start | Run `docker compose logs walflow-server`. Confirm `WALFLOW_IMAGE` points to an image you can pull and `APP_ENCRYPTION_KEY` is Base64 for exactly 32 random bytes. On first start both administrator values must be set. |
 | Database test says SQL works but CDC is unavailable | Enable logical replication, use a direct endpoint, and ensure the database role has `REPLICATION`. |
 | Connection fails | Confirm host, port, credentials, firewall rules, and TLS settings. The container—not just your browser—must reach the database. |
+| Supabase connection fails ("Could not connect to PostgreSQL") | Supabase direct endpoints use IPv6. In Docker Desktop, go to **Settings → Docker Engine**, add `"ipv6": true, "fixed-cidr-v6": "2001:db8:1::/64", "ip6tables": true`, click **Apply & restart**, and restart containers (`docker compose restart`). |
 | Pipeline does not capture a row | Confirm the pipeline is running and the changed table is selected by that pipeline. Only committed changes are captured. |
 | Sink stays Unknown | Use **Send Test Event**. A saved endpoint alone is not delivery evidence. |
 | Sink is Degraded or Failing | Inspect the redacted error and HTTP status, confirm the endpoint is public and returns a 2xx response, and verify the receiver accepts the HMAC headers. |
