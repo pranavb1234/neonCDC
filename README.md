@@ -20,6 +20,7 @@ A small local demo of PostgreSQL Change Data Capture: a Go connector reads commi
 These documents are written for portfolio review and interview preparation:
 
 - [Architecture and repository map](docs/ARCHITECTURE.md)
+- [Component and function reference](docs/COMPONENT_REFERENCE.md)
 - [End-to-end application flows](docs/FLOWS.md)
 - [Interview walkthrough](docs/INTERVIEW_GUIDE.md)
 - [System design](docs/SYSTEM_DESIGN.md)

@@ -1,66 +1,195 @@
 # CDC Lite system design
 
-## Functional requirements implemented
-
-- Connect a PostgreSQL source database using a customer-supplied URL.
-- Verify CDC compatibility rather than silently falling back to polling.
-- Select source tables and stream committed row changes.
-- Buffer events in Redis.
-- Send signed webhooks and show delivery outcomes.
-- Display live events and basic operational state in a browser.
-
-## Data plane vs control plane
+## The complete system
 
 ```mermaid
 flowchart TB
-  subgraph Control plane
-    UI[Next.js console] --> API[Go API]
-    API --> DB[(SQLite metadata)]
+  USER[Customer / developer]
+  SITE[Separate public website<br/>Next.js + Fumadocs]
+  CONSOLE[Customer console<br/>Next.js static files]
+
+  subgraph COMPOSE[Customer Docker Compose installation]
+    subgraph SERVER[cdc-lite-server container]
+      HTTP[Go HTTP server<br/>health + API + static console]
+      CONTROL[Control-plane API handlers]
+      PM[Pipeline manager<br/>one active job]
+      REPL[Go replication job<br/>pgx + pglogrepl + pgoutput]
+      DEL[Delivery loop<br/>Redis consumer group]
+      SIGN[HMAC signer + SSRF-safe HTTP client]
+      EMBED[Embedded web assets]
+    end
+    REDIS[(Redis 7<br/>Stream: cdc:events)]
+    SQLITE[(SQLite metadata<br/>/data/cdc-lite.db)]
   end
-  subgraph Data plane
-    PG[(PostgreSQL)] --> REP[Replication job]
-    REP --> STREAM[(Redis Stream)]
-    STREAM --> DEL[Delivery loop]
-    DEL --> WEBHOOK[Webhook receiver]
-  end
-  API --> REP
-  API --> DEL
+
+  SOURCE[(Customer PostgreSQL / Neon<br/>WAL, publication, slot, selected tables)]
+  DEST[Public webhook receiver]
+
+  USER --> SITE
+  USER --> CONSOLE
+  CONSOLE -->|same-origin REST + SSE| HTTP
+  HTTP --> EMBED
+  HTTP --> CONTROL
+  CONTROL <--> SQLITE
+  CONTROL --> PM
+  PM -->|start / cancel| REPL
+  REPL <-->|normal SQL + catalog queries| SOURCE
+  REPL <-->|logical replication protocol| SOURCE
+  REPL -->|XADD committed events<br/>before LSN acknowledgement| REDIS
+  HTTP -->|XREAD/XRANGE for Live Events| REDIS
+  DEL <-->|XREADGROUP + XACK| REDIS
+  DEL --> SIGN
+  SIGN -->|raw JSON + HMAC POST| DEST
+  DEL -->|safe delivery history| SQLITE
 ```
 
-The control plane stores desired configuration: sources, selected tables, pipelines, sinks, and historical status. The data plane moves actual change events. Separating these ideas prevents transient runtime state from being the only record of a pipeline.
+## Two separate frontends
 
-## Delivery semantics
+| Application | Folder | Audience | Role |
+| --- | --- | --- | --- |
+| Customer console | `web/` | Customer operating CDC Lite | Manages sources, pipelines, sinks, events, and health. Its static output is embedded in the Go server. |
+| Public website | `website/` | Recruiter/developer/public user | Landing page and Fumadocs documentation. It does not access customer sources or metadata. |
 
-CDC Lite provides **at-least-once** delivery, not exactly-once.
+The separation is intentional: customer operations are private and self-hosted; public documentation can be deployed independently.
 
-1. A PostgreSQL transaction commits.
-2. CDC Lite publishes its decoded events to Redis.
-3. CDC Lite acknowledges the PostgreSQL LSN only after the Redis write succeeds.
-4. The delivery loop sends each event and acknowledges the Redis message after receiving a 2xx HTTP response.
+## Control plane in detail
 
-If any process stops between these stages, an event can be retried. Stable event IDs provide the receiver with the information needed for idempotency.
+The **control plane** answers: *what source should be captured, which tables, which sink, and what is the desired/current configuration state?* It does not carry every change row. SQLite is its source of truth.
 
-## Main data model
+```mermaid
+erDiagram
+  SOURCE_CONNECTIONS ||--o{ PIPELINES : "owns"
+  PIPELINES ||--o{ PIPELINE_TABLES : "captures"
+  PIPELINES ||--o{ SINKS : "routes to"
+  SINKS ||--o{ DELIVERY_ATTEMPTS : "has"
 
-| Entity | Purpose |
+  SOURCE_CONNECTIONS {
+    int id PK
+    string name
+    bytes encrypted_connection_url
+    string connection_test_status
+    string last_safe_error
+  }
+  PIPELINES {
+    int id PK
+    int source_connection_id FK
+    string publication_name
+    string slot_name
+    string status
+    string last_safe_error
+  }
+  PIPELINE_TABLES {
+    int pipeline_id FK
+    string schema_name
+    string table_name
+  }
+  SINKS {
+    int id PK
+    int pipeline_id FK
+    string webhook_url
+    bytes encrypted_signing_secret
+    boolean enabled
+  }
+  DELIVERY_ATTEMPTS {
+    int id PK
+    int sink_id FK
+    string event_id
+    string status
+    int http_status
+    string safe_error
+  }
+```
+
+### Control-plane jobs
+
+1. Receive browser configuration requests through Go HTTP handlers.
+2. Test normal PostgreSQL access separately from CDC requirements.
+3. Encrypt secrets before storage; decrypt them only for an in-memory operation.
+4. Validate selected tables before pipeline creation.
+5. Persist pipeline configuration before starting a replication goroutine.
+6. Expose read-only source inspection and safe operational history.
+7. Keep pipeline/sink configuration after a process restart even though running goroutines disappear.
+
+`pipelineManager` is a small control-plane runtime helper. Its map stores only cancellation functions for currently running jobs. SQLite is still the durable record. On startup `MarkInterruptedPipelinesStopped` corrects statuses because an old in-memory job cannot survive a process restart.
+
+## Data plane in detail
+
+The **data plane** answers: *how does one committed database row change reach the right webhook safely?* Its components are PostgreSQL WAL, the Go replication job, Redis Stream, the delivery loop, and the destination.
+
+```mermaid
+stateDiagram-v2
+  [*] --> PostgreSQLCommit: source transaction commits
+  PostgreSQLCommit --> ReplicationFrames: Begin / row changes / Commit via pgoutput
+  ReplicationFrames --> TransactionBuffer: eventDecoder holds row changes
+  TransactionBuffer --> RedisPersisted: Commit received and XADD succeeds
+  RedisPersisted --> LSNAcknowledged: SendStandbyStatusUpdate
+  RedisPersisted --> PendingDelivery: consumer group reads event
+  PendingDelivery --> Delivered: webhook returns HTTP 2xx
+  PendingDelivery --> PendingRetry: network/non-2xx failure
+  PendingRetry --> PendingDelivery: later retry
+  Delivered --> RedisAcknowledged: XACK after all enabled matching sinks succeed
+  RedisAcknowledged --> [*]
+```
+
+### Central reliability invariant
+
+**CDC Lite must persist the committed event in Redis before acknowledging the related PostgreSQL LSN.**
+
+If PostgreSQL were acknowledged first, a crash between acknowledgement and Redis write could lose a source event permanently. The implemented order can instead produce a duplicate after a crash/reconnect. That is intentional **at-least-once delivery**. Stable IDs (`commit_lsn:sequence`) let a receiver deduplicate.
+
+## End-to-end request and event paths
+
+### Create a pipeline
+
+```text
+Console POST /api/databases/{id}/pipelines
+  → createPipeline()
+  → validatePipelineTables() [read-only PostgreSQL check]
+  → pipelineNames()
+  → SQLite CreatePipeline()
+  → launchPipeline()
+  → postgres.Connect()
+  → replication.Run() goroutine
+  → PostgreSQL ensurePublication() + ensureSlot()
+```
+
+### Process a source row
+
+```text
+PostgreSQL COMMIT
+  → readMessages()
+  → ParseXLogData() + pglogrepl.Parse()
+  → eventDecoder.Process()
+  → StreamPublisher.Publish()
+  → Redis XADD cdc:events
+  → acknowledgeCommit(LSN)
+  → deliveryLoop() XREADGROUP
+  → EnabledSinksForPipeline(pipelineID)
+  → deliverWebhook()
+  → RecordDeliveryAttempt()
+  → Redis XACK after success
+```
+
+### Live browser updates
+
+```text
+EventList → GET /api/events [recent snapshot]
+EventList → EventSource /api/events/stream
+server.stream() → Redis XREAD
+server.stream() → SSE event: cdc
+EventList updates list and applies table/operation filters in browser
+```
+
+## Failure boundaries
+
+| Boundary | Failure outcome |
 | --- | --- |
-| `administrators` | One password-hashed local administrator record. |
-| `source_connections` | Display name, encrypted PostgreSQL URL, test state, safe error. |
-| `pipelines` | Source connection, publication/slot names, selected tables, state, safe error. |
-| `pipeline_tables` | Many selected schema/table pairs for a pipeline. |
-| `sinks` | Pipeline-specific Webhook sink, encrypted signing secret, enabled state, recent status. |
-| `delivery_attempts` | Bounded safe delivery history without payloads or secrets. |
+| Source → replication job | Connection or permissions failure marks the pipeline with a safe error; there is no polling fallback. |
+| Replication job → Redis | Redis publish failure prevents LSN acknowledgement, allowing source replay. |
+| Redis → webhook | Failure is recorded; stream message remains unacknowledged/pending. |
+| Webhook endpoint | SSRF checks reject unsafe addresses/redirects; only HTTP 2xx succeeds. |
+| Process restart | Configuration/history stays in SQLite; runtime jobs are safely marked stopped and require explicit start. |
 
-## Failure handling
+## Current deployment limitation
 
-| Failure | Current behavior |
-| --- | --- |
-| PostgreSQL connection/prerequisite failure | Marks pipeline failed with an actionable safe error; does not poll. |
-| Redis publish failure | Does not acknowledge the related PostgreSQL LSN. |
-| Webhook non-2xx / network failure | Records failure and leaves stream entry pending. |
-| Server restart | Stops in-memory jobs safely; saved pipeline configuration remains in SQLite. |
-| Webhook destination points internally | Rejects loopback, private, link-local, cloud-metadata, redirects, and unsafe DNS resolution. |
-
-## Why these choices fit the project
-
-The goal was to demonstrate robust ideas without pretending to be an enterprise product. Redis Streams gives a durable local buffer with low operational complexity. SQLite avoids adding another database solely for small control-plane metadata. A single Go service keeps the Compose deployment understandable for a student project and self-hosted demo.
+One server process, SQLite, and the in-memory pipeline manager mean this topology is intentionally single-installation and single-active-pipeline. It is a correct small architecture, not a horizontally replicated multi-tenant service. See [the scaling roadmap](SCALING_TO_MILLIONS.md) for the design changes required to remove those limits.

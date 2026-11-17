@@ -1,5 +1,9 @@
 # CDC Lite application flows
 
+## How to read this document
+
+Each flow names the current browser component, Go handler, store method, or package function. The packaged server is `worker/cmd/server`; the older standalone `cmd/connector` and `cmd/delivery` programs are documented in the component reference.
+
 ## 1. First startup and metadata initialization
 
 1. Docker Compose starts `redis` and `cdc-lite-server`.
@@ -64,3 +68,46 @@ The behavior is at-least-once: a message can be delivered more than once, especi
 3. The Sinks page loads recent delivery attempts from SQLite.
 4. Health is calculated from delivery evidence, not configuration: Healthy, Degraded, Failing, Paused, or Unknown.
 5. Only safe metadata is retained: event ID, time, outcome, HTTP status, and redacted error. The database keeps the newest 100 attempts per sink and shows 20.
+
+## 8. Exact end-to-end call chain for one `orders` INSERT
+
+Assume a running pipeline selected `public.orders` and has an enabled webhook sink.
+
+```text
+1. User executes INSERT ...; COMMIT; in PostgreSQL.
+2. PostgreSQL writes WAL and sends pgoutput frames through the replication slot.
+3. replication.readMessages() receives pgproto3.CopyData.
+4. pglogrepl.ParseXLogData() extracts WALData.
+5. pglogrepl.Parse() returns BeginMessage, InsertMessage, then CommitMessage.
+6. eventDecoder.Process(BeginMessage) starts a transaction buffer.
+7. eventDecoder.Process(InsertMessage) calls insert() → relation() → decodeTuple() → decodeValue().
+8. The decoded row is stored in eventDecoder.changes. Nothing is published yet.
+9. eventDecoder.Process(CommitMessage) calls commit(), creating Event{id: commitLSN:1, ...}.
+10. readMessages() calls StreamPublisher.Publish(ctx, events).
+11. Publish() JSON-marshals the event, adds pipeline_id, queues Redis XADD, then Exec() persists it.
+12. readMessages() calls acknowledgeCommit() only after Publish() returns nil.
+13. deliveryLoop() reads the stream message with XREADGROUP.
+14. It calls Store.EnabledSinksForPipeline(pipelineID), so unrelated sinks are excluded.
+15. deliverWebhook() validates URL, decrypts secret in memory, signs raw JSON, and sends POST.
+16. Store.RecordDeliveryAttempt() records the safe result. On 2xx, deliveryLoop() calls XACK.
+17. The SSE endpoint observes the same Redis entry and EventList renders it in Live Events.
+18. GET /api/sinks calls ListSinks() and sinkHealth(), so the delivery becomes visible in the overview.
+```
+
+## 9. What happens during common failures
+
+### Redis fails at commit time
+
+`StreamPublisher.Publish` fails. `readMessages` returns before `acknowledgeCommit`, so PostgreSQL has not been told the LSN is safe. A reconnect can replay the committed change. This protects against loss but can duplicate delivery.
+
+### Webhook returns HTTP 500
+
+`deliverWebhook` returns `webhookDeliveryError`. `deliveryLoop` records a failed `DeliveryAttempt`, does **not** `XACK`, and leaves the message pending. The sink health becomes Degraded or Failing based on recent attempt history.
+
+### Server restarts with a pipeline recorded as running
+
+The live cancellation map is process memory. At startup `MarkInterruptedPipelinesStopped` marks persisted `running`/`starting` pipelines stopped with a safe explanation. The saved source tables, slot/publication names, and sink configuration remain available for explicit restart.
+
+### Browser closes Live Events
+
+`stream()` observes `r.Context().Done()` and stops waiting on Redis. SSE does not consume or acknowledge stream messages; it only observes them, so the delivery pipeline continues independently.
