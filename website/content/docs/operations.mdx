@@ -1,0 +1,37 @@
+---
+title: Operations and troubleshooting
+description: Sink health, logs, updates, backup, restore, and uninstall.
+---
+
+## Sink health
+
+- **Healthy**: newest observed delivery succeeded.
+- **Degraded**: newest delivery failed after earlier successes.
+- **Failing**: at least three recent deliveries failed.
+- **Paused**: sink is disabled.
+- **Unknown**: no delivery attempt yet.
+
+CDC Lite keeps 100 delivery records per sink and displays the newest 20. Entries include event ID, time, outcome, optional HTTP status, and a redacted error. They never include payloads or secrets.
+
+## Logs
+
+```powershell
+docker compose ps
+docker compose logs -f cdc-lite-server
+docker compose logs -f redis
+```
+
+Look for `webhook delivered` or `webhook delivery failed`. Confirm the sink is enabled, connected to the same pipeline as the changed table, and that the receiver returns a 2xx response.
+
+## Update, backup, and uninstall
+
+Set `CDC_LITE_IMAGE` in `.env` to a newer supplied image, then run:
+
+```powershell
+docker compose pull
+docker compose up -d
+```
+
+Do not use `-v` when updating. To stop while preserving data, run `docker compose down`. `docker compose down -v` permanently removes saved configuration, history, and buffered events.
+
+Back up the `cdc-lite-data` and `cdc-lite-redis-data` volumes after `docker compose down`, and preserve `APP_ENCRYPTION_KEY` with the metadata backup. The Docker Compose package README contains the exact backup and restore commands.

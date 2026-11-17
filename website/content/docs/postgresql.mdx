@@ -1,0 +1,22 @@
+---
+title: Connect PostgreSQL
+description: Save, test, and safely browse a source database.
+---
+
+Open **Databases**, select **Add Database**, enter a display name and connection string, then choose **Test Connection**. CDC Lite tests SQL connectivity and logical replication separately. Save only after both pass.
+
+Saved connection strings are encrypted in `cdc-lite-data` and are never returned by the API or logs.
+
+## Requirements
+
+- PostgreSQL needs `wal_level=logical`.
+- The role needs `REPLICATION` and access to selected tables.
+- Your provider must support publications and logical replication slots.
+- Remote databases need TLS: `sslmode=require`, `sslmode=verify-ca`, or `sslmode=verify-full`.
+- Use a direct endpoint, not a transaction-pooling or `-pooler` endpoint.
+
+For Neon, enable Logical Replication in project settings and use a direct, unpooled endpoint. CDC Lite does not fall back to polling.
+
+## Browse tables
+
+Choose **Browse** for a saved database to view non-system schemas, tables, columns, primary keys, replica identity, and a small read-only preview. The browser never accepts arbitrary SQL or modifies source data.

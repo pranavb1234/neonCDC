@@ -2,6 +2,18 @@
 
 A small local demo of PostgreSQL Change Data Capture: a Go connector reads committed row changes from Neon PostgreSQL, stores JSON events in Redis Streams, a Go worker posts them to a webhook, and a Next.js dashboard displays them.
 
+## Public website and documentation
+
+The customer console in `web/` is separate from the public landing and documentation site in `website/`. The website uses Fumadocs, with its landing page at `/` and documentation at `/docs`.
+
+```powershell
+Set-Location website
+npm install
+npm run dev
+```
+
+Open `http://localhost:3000` for the landing page and `http://localhost:3000/docs` for the Fumadocs guide. Run the customer console separately from `web/`; it also defaults to port 3000, so choose a different port when both are running.
+
 ## What is included now
 
 This first step provides the local Redis service and configuration scaffold. The connector, delivery worker, dashboard, and sample receiver will be added in later steps.

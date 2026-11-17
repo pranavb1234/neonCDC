@@ -1,0 +1,27 @@
+---
+title: Webhook sinks
+description: Deliver signed CDC events and test the receiver.
+---
+
+Open **Sinks**, choose **Create Sink**, select the pipeline, enter a public HTTPS endpoint, provide a secret or let CDC Lite generate one, then review and save. A generated secret is shown once only.
+
+CDC Lite signs the exact raw JSON request body with HMAC-SHA256 over `timestamp + "." + body`:
+
+```text
+X-CDC-Event-Id
+X-CDC-Timestamp
+X-CDC-Signature: v1=<hex HMAC-SHA256>
+```
+
+Loopback, private, link-local, cloud-metadata destinations and redirects are blocked. Use a public HTTPS endpoint.
+
+## Test delivery
+
+Create a request URL at [Webhook.site](https://webhook.site/), use it for an enabled sink, then choose **Send Test Event**. Confirm the headers and request in Webhook.site. Then start the linked pipeline, change a selected table, and verify the CDC event in both Webhook.site and the sink history.
+
+The included Go receiver listens on localhost, so expose it through a public HTTPS tunnel before using it as a sink endpoint:
+
+```powershell
+Set-Location sample\receiver
+go run .
+```

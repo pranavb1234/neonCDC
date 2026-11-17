@@ -3,5 +3,8 @@ web/.env.local
 web/node_modules/
 web/.next/
 web/tsconfig.tsbuildinfo
+website/node_modules/
+website/.next/
+website/tsconfig.tsbuildinfo
 worker/bin/
 dist/
