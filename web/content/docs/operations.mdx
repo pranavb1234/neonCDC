@@ -1,0 +1,66 @@
+---
+title: Operations and troubleshooting
+description: Sink health, logs, update, backup, restore, and uninstall.
+---
+
+## Sink health
+
+Health is based on observed delivery evidence, never merely on a saved configuration.
+
+- **Healthy**: the newest observed delivery succeeded.
+- **Degraded**: the newest delivery failed after earlier successful deliveries.
+- **Failing**: at least three recent deliveries all failed.
+- **Paused**: the sink is disabled.
+- **Unknown**: no delivery attempt exists yet.
+
+CDC Lite stores the newest 100 delivery records per sink and displays the newest 20. Records include event ID, timestamp, outcome, optional HTTP status, and a redacted error summary. They never include event payloads or secrets.
+
+## Logs
+
+```powershell
+docker compose ps
+docker compose logs -f cdc-lite-server
+docker compose logs -f redis
+```
+
+If delivery fails, check for `webhook delivered` or `webhook delivery failed` in server logs. Confirm that the sink is enabled, linked to the same pipeline as the changed table, and that the receiver returns a 2xx response.
+
+## Update
+
+Set `CDC_LITE_IMAGE` in `.env` to the newer image reference supplied by the publisher:
+
+```powershell
+docker compose pull
+docker compose up -d
+```
+
+Do not use `-v` during updates. Docker preserves `cdc-lite-data` and `cdc-lite-redis-data`.
+
+## Backup and restore
+
+Stop containers before backup:
+
+```powershell
+docker compose down
+$backupPath = (Get-Location).Path
+docker run --rm -v cdc-lite-data:/data -v "${backupPath}:/backup" alpine tar czf /backup/cdc-lite-data-backup.tar.gz -C /data .
+docker run --rm -v cdc-lite-redis-data:/data -v "${backupPath}:/backup" alpine tar czf /backup/cdc-lite-redis-data-backup.tar.gz -C /data .
+```
+
+Keep `APP_ENCRYPTION_KEY` with the metadata backup. To restore, use the same key, stop the app, replace volume contents from the backup, then run `docker compose up -d`. The full copy-and-restore commands are also included in the Docker Compose package README.
+
+## Uninstall
+
+Stop containers without removing data:
+
+```powershell
+docker compose down
+```
+
+To permanently remove saved configuration, delivery history, and buffered events:
+
+```powershell
+docker compose down -v
+```
+
+This cannot be undone unless you made a backup.

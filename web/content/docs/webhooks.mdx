@@ -1,0 +1,44 @@
+---
+title: Webhook sinks
+description: Deliver signed CDC events and test the receiver.
+---
+
+## Create a sink
+
+1. Open **Sinks** and select **Create Sink**. The current release opens the Webhook setup directly.
+2. Choose the source pipeline and provide a public HTTPS endpoint.
+3. Provide a signing secret or leave it blank for CDC Lite to generate one.
+4. Review and create the sink.
+
+A generated secret is displayed once. Save it immediately. CDC Lite encrypts it in the metadata volume and never displays it again.
+
+## Signature format
+
+CDC Lite signs the exact raw JSON body with HMAC-SHA256 over `timestamp + "." + body` and sends these headers:
+
+```text
+X-CDC-Event-Id
+X-CDC-Timestamp
+X-CDC-Signature: v1=<hex HMAC-SHA256>
+```
+
+Webhook targets resolving to loopback, private, link-local, or cloud metadata addresses are blocked. Redirects are blocked too. Use a publicly reachable HTTPS endpoint.
+
+## Test with Webhook.site
+
+1. Open [Webhook.site](https://webhook.site/) and create a unique HTTPS request URL.
+2. Use that URL for an enabled sink.
+3. Select **Send Test Event** on the sink.
+4. Confirm the request and signature headers in Webhook.site.
+5. Start the linked pipeline, change a selected source-table row, and confirm the CDC event appears in Webhook.site and the sink history.
+
+## Test with the sample receiver
+
+The sample Go receiver listens only on `localhost`, so CDC Lite correctly rejects it as a sink target. Run it, expose it through a public HTTPS tunnel, and use the tunnel URL:
+
+```powershell
+Set-Location sample\receiver
+go run .
+```
+
+The receiver verifies the HMAC signature and prints the event ID and operation. Do not disable SSRF protection to allow localhost.

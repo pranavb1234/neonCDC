@@ -1,0 +1,60 @@
+---
+title: Quick start
+description: Install the customer Docker Compose package and open CDC Lite.
+---
+
+## What Compose starts
+
+`docker compose up -d` starts two containers:
+
+- `cdc-lite-server`: the web console, API, CDC connector, and sequential webhook delivery worker.
+- `redis`: CDC Lite's internal event buffer. It is not exposed to the host computer.
+
+CDC Lite does not start PostgreSQL. You connect an existing source database through the web console.
+
+The console is at [http://localhost:3000](http://localhost:3000). The default and documented port is `3000`.
+
+## Requirements
+
+- Docker Desktop with Docker Compose on Windows or macOS, or Docker Engine plus the Docker Compose plugin on Linux.
+- Network access from the CDC Lite container to your PostgreSQL source and webhook endpoint.
+- A CDC Lite container image reference supplied by the publisher.
+
+Go, Node.js, Redis, and PostgreSQL are not required on the machine running the package.
+
+## Configure the package
+
+1. Download the Docker Compose ZIP and its SHA-256 checksum from the CDC Lite publisher.
+2. Extract the ZIP with File Explorer's **Extract All** action.
+3. Open PowerShell in the extracted folder and create your local configuration:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Edit `.env` and set `CDC_LITE_IMAGE` to the exact image reference supplied by the publisher. Set `ADMIN_EMAIL` and a unique `ADMIN_PASSWORD` of at least 12 characters.
+
+Generate `APP_ENCRYPTION_KEY` once and put its output in `.env`:
+
+```powershell
+$bytes = New-Object byte[] 32
+[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+[Convert]::ToBase64String($bytes)
+```
+
+Keep that key. It encrypts saved connection strings and webhook secrets. Losing or replacing it makes saved values unreadable.
+
+## Start CDC Lite
+
+```powershell
+docker compose up -d
+docker compose ps
+```
+
+When `cdc-lite-server` is `healthy`, open [http://localhost:3000](http://localhost:3000).
+
+## Administrator record
+
+On first startup, CDC Lite stores the administrator email and a password hash in the `cdc-lite-data` Docker volume. It never writes the password to logs. Remove `ADMIN_EMAIL` and `ADMIN_PASSWORD` from `.env` after first startup; the stored administrator remains.
+
+The current release creates the administrator record but does **not** enforce a login screen. Run it only on a trusted local computer or protected private network.

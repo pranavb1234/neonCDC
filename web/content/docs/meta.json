@@ -1,0 +1,4 @@
+{
+  "title": "CDC Lite",
+  "pages": ["index", "quick-start", "postgresql", "pipelines", "webhooks", "operations"]
+}

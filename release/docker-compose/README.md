@@ -4,6 +4,8 @@ CDC Lite watches selected tables in your PostgreSQL database for committed `INSE
 
 CDC Lite does not host PostgreSQL and does not copy an initial snapshot of your data. You connect an existing PostgreSQL database and choose the tables to capture.
 
+After startup, this same guide is available in the web console at [http://localhost:3000/docs](http://localhost:3000/docs), rendered with Fumadocs. Keep this file with the Docker Compose package so installation instructions remain available before the app is running.
+
 ## What this package starts
 
 `docker compose up -d` starts two containers:
