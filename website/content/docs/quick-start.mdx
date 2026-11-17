@@ -1,27 +1,61 @@
 ---
 title: Quick start
-description: Install the Docker Compose package and open Walflow.
+description: Download the Docker Compose package, configure, and start Walflow.
 ---
 
-## What Compose starts
+## Prerequisites
 
-`docker compose up -d` starts `walflow-server` (the console, connector, and delivery worker) and `redis` (the internal event buffer). PostgreSQL is not started: connect your existing source through the console.
+- Docker Desktop (Windows / macOS) or Docker Engine + Compose (Linux).
+- A published Walflow image — `ghcr.io/pranavb1234/walflow:latest`.
+- Go, Node.js, Redis, and PostgreSQL are **not** required locally.
 
-The console runs at [http://localhost:3000](http://localhost:3000). The Docker Compose package stores configuration in the `walflow-data` volume and Redis data in `walflow-redis-data`.
+## 1. Download
 
-## Install
+```bash
+curl -LO https://github.com/pranavb1234/walflow/releases/latest/download/Walflow-Docker-Compose.zip
+```
 
-You need Docker Desktop with Docker Compose on Windows or macOS, or Docker Engine plus Compose on Linux. You also need a published Walflow image reference from the publisher. Go, Node.js, Redis, and PostgreSQL are not required locally.
+Or download the ZIP manually from the [GitHub Releases](https://github.com/pranavb1234/walflow/releases) page.
 
-Extract the Docker Compose ZIP, open PowerShell in the extracted folder, and run:
+## 2. Extract
+
+**Windows (PowerShell):**
+
+```powershell
+Expand-Archive Walflow-Docker-Compose.zip -DestinationPath Walflow-Docker-Compose
+cd Walflow-Docker-Compose
+```
+
+**macOS / Linux:**
+
+```bash
+unzip Walflow-Docker-Compose.zip -d Walflow-Docker-Compose
+cd Walflow-Docker-Compose
+```
+
+## 3. Configure
+
+Copy the example environment file:
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Set `WALFLOW_IMAGE`, `ADMIN_EMAIL`, and a unique `ADMIN_PASSWORD` of at least 12 characters in `.env`.
+Open `.env` in a text editor and fill in the values:
 
-Generate `APP_ENCRYPTION_KEY` once:
+### `WALFLOW_IMAGE`
+
+Set this to the Walflow Docker image:
+
+```ini
+WALFLOW_IMAGE=ghcr.io/pranavb1234/walflow:latest
+```
+
+To pin a specific version, replace `latest` with a version tag (e.g. `ghcr.io/pranavb1234/walflow:0.1.0`).
+
+### `APP_ENCRYPTION_KEY`
+
+Generate a 32-byte Base64 key (run once, save forever):
 
 ```powershell
 $bytes = New-Object byte[] 32
@@ -29,13 +63,42 @@ $bytes = New-Object byte[] 32
 [Convert]::ToBase64String($bytes)
 ```
 
-Keep the key: it encrypts saved connection strings and webhook secrets. Start Walflow:
+Paste the output into `.env`. This key encrypts saved connection strings and webhook secrets — do not lose it.
+
+### Admin credentials
+
+Set `ADMIN_EMAIL` and `ADMIN_PASSWORD` (minimum 12 characters).
+
+### Complete `.env` example
+
+```ini
+WALFLOW_IMAGE=ghcr.io/pranavb1234/walflow:latest
+WALFLOW_PORT=3000
+APP_ENCRYPTION_KEY=<your-generated-key>
+ADMIN_EMAIL=you@example.com
+ADMIN_PASSWORD=your-secure-password
+```
+
+## 4. Start
 
 ```powershell
 docker compose up -d
 docker compose ps
 ```
 
-When `walflow-server` is healthy, open [http://localhost:3000](http://localhost:3000).
+When `walflow-server` shows as **healthy**, open [http://localhost:3000](http://localhost:3000).
 
-The first startup saves an administrator email and password hash. The current release does not yet enforce a login screen, so run it only on a trusted local machine or protected private network.
+## What Compose starts
+
+`docker compose up -d` starts two services:
+
+| Service | Description |
+|---|---|
+| `walflow-server` | The console, connector, and delivery worker |
+| `redis` | Internal event buffer |
+
+PostgreSQL is **not** started — connect your existing source database through the console. Configuration is stored in the `walflow-data` volume and Redis data in `walflow-redis-data`.
+
+## Security note
+
+The first startup saves the administrator email and password hash. The current release does not yet enforce a login screen, so run it only on a trusted local machine or protected private network.

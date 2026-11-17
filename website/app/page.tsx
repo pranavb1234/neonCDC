@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { SiteHeader } from "@/components/site-header";
 import { HeroCircuit } from "@/components/hero-circuit";
+import { CopyCommand } from "@/components/copy-command";
 import { ArrowRight } from "lucide-react";
 
 export default function LandingPage() {
@@ -29,15 +30,26 @@ export default function LandingPage() {
             Capture every change in your PostgreSQL database and stream it wherever it needs to go. Self-hosted, reliable, and completely under your control.
           </p>
 
-          {/* Call to Action */}
-          <div className="mt-9 flex items-center">
-            <Link
-              href="/docs"
-              className="glow-pill-green inline-flex items-center gap-2.5 rounded-xl px-8 py-3.5 text-sm sm:text-base font-semibold tracking-wide"
-            >
-              <span>Get started</span>
-              <ArrowRight className="h-4 w-4" />
-            </Link>
+          {/* Download command + CTA */}
+          <div className="mt-9 flex flex-col gap-4 max-w-xl">
+            <CopyCommand command="curl -LO https://github.com/pranavb1234/walflow/releases/latest/download/Walflow-Docker-Compose.zip" />
+            <div className="flex items-center gap-4">
+              <Link
+                href="/docs/quick-start"
+                className="glow-pill-green inline-flex items-center gap-2.5 rounded-xl px-8 py-3.5 text-sm sm:text-base font-semibold tracking-wide"
+              >
+                <span>Get started</span>
+                <ArrowRight className="h-4 w-4" />
+              </Link>
+              <a
+                href="https://github.com/pranavb1234/walflow/releases/latest"
+                target="_blank"
+                rel="noreferrer"
+                className="text-sm text-zinc-400 hover:text-emerald-300 transition-colors underline underline-offset-4"
+              >
+                or download from GitHub
+              </a>
+            </div>
           </div>
         </div>
       </section>
@@ -85,11 +97,12 @@ export default function LandingPage() {
                 <span className="ml-2 text-zinc-400">bash — terminal</span>
               </div>
               <div className="space-y-1.5 text-zinc-300">
-                <p className="text-zinc-500"># Clone and start with Docker</p>
-                <p><span className="text-emerald-500">$</span> git clone https://github.com/pranavb1234/walflow.git</p>
-                <p><span className="text-emerald-500">$</span> cd walflow</p>
+                <p className="text-zinc-500"># Download and start Walflow</p>
+                <p><span className="text-emerald-500">$</span> curl -LO https://github.com/pranavb1234/walflow/releases/latest/download/Walflow-Docker-Compose.zip</p>
+                <p><span className="text-emerald-500">$</span> unzip Walflow-Docker-Compose.zip &amp;&amp; cd Walflow-Docker-Compose</p>
+                <p><span className="text-emerald-500">$</span> cp .env.example .env &amp;&amp; nano .env</p>
                 <p><span className="text-emerald-500">$</span> docker compose up -d</p>
-                <p className="pt-2 text-emerald-400 font-pixel text-[11px]">&gt; [OK] Walflow streaming from postgres://localhost:5432</p>
+                <p className="pt-2 text-emerald-400 font-pixel text-[11px]">&gt; [OK] Walflow running at http://localhost:3000</p>
               </div>
             </div>
           </div>

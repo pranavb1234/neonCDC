@@ -13,9 +13,74 @@ Saved connection strings are encrypted in `walflow-data` and are never returned 
 - The role needs `REPLICATION` and access to selected tables.
 - Your provider must support publications and logical replication slots.
 - Remote databases need TLS: `sslmode=require`, `sslmode=verify-ca`, or `sslmode=verify-full`.
-- Use a direct endpoint, not a transaction-pooling or `-pooler` endpoint.
+- Use a **direct** endpoint — never a transaction-pooling or `-pooler` endpoint.
 
-For Neon, enable Logical Replication in project settings and use a direct, unpooled endpoint. Walflow does not fall back to polling.
+## Provider setup
+
+### Supabase
+
+In your Supabase Dashboard go to **Project Settings → Database → Connection string**. Select the **URI** tab and choose **Session mode (port 5432)** — not the connection pooler. Your connection string must look like this:
+
+```text
+postgresql://postgres:[YOUR-PASSWORD]@db.[PROJECT-REF].supabase.co:5432/postgres?sslmode=require
+```
+
+Replace `[YOUR-PASSWORD]` with your database password and `[PROJECT-REF]` with your project reference (the identifier in your Supabase project URL).
+
+Before creating a pipeline, run the following on each table you want to capture:
+
+```sql
+ALTER TABLE your_table REPLICA IDENTITY FULL;
+```
+
+#### Docker network configuration (required for Supabase)
+
+Supabase direct endpoints (`db.[ref].supabase.co`) resolve exclusively to **IPv6** addresses. Docker Desktop on Windows and macOS disables IPv6 on its default bridge network, which causes a `Network unreachable` error inside the container even though the host machine can connect fine.
+
+**To enable IPv6 in Docker Desktop:**
+
+1. Open **Docker Desktop Settings** (gear icon) → **Docker Engine**.
+2. Merge the following fields into your `daemon.json`:
+
+```json
+{
+  "builder": {
+    "gc": {
+      "defaultKeepStorage": "20GB",
+      "enabled": true
+    }
+  },
+  "experimental": false,
+  "ipv6": true,
+  "fixed-cidr-v6": "2001:db8:1::/64",
+  "ip6tables": true
+}
+```
+
+3. Click **Apply & restart**.
+4. Restart your Walflow containers:
+
+```bash
+docker compose restart
+```
+
+---
+
+### Neon
+
+In your Neon Console go to **Project Settings → Logical Replication** and enable it. Then go to the **Connection Details** panel and copy the **direct** connection string — the one whose hostname looks like `ep-[name].[region].aws.neon.tech`. **Do not use the `-pooler` variant.**
+
+Your connection string must look like this:
+
+```text
+postgresql://neondb_owner:[PASSWORD]@ep-[name].[region].aws.neon.tech/[dbname]?sslmode=require&channel_binding=require
+```
+
+> **Note:** Neon connection strings include `channel_binding=require`. This is correct — Walflow supports it.
+
+The `-pooler` endpoint (`ep-[name]-pooler.[region].aws.neon.tech`) does **not** support logical replication. Walflow will reject it.
+
+---
 
 ## Browse tables
 
