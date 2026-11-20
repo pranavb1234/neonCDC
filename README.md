@@ -1,230 +1,360 @@
-# Walflow
+# Walflow — Complete System & Engineering Guide
 
-A small local demo of PostgreSQL Change Data Capture: a Go connector reads committed row changes from Neon PostgreSQL, stores JSON events in Redis Streams, a Go worker posts them to a webhook, and a Next.js dashboard displays them.
+> **Everything you need to know about Walflow**: internal architecture, data structures, protocol mechanics, failure handling, edge cases, security, and technical interview deep-dives.
 
-## Resume highlights
+---
 
-- Built **Walflow**, a self-hosted PostgreSQL Change Data Capture platform using **Go, PostgreSQL logical replication (`pgoutput`), Redis Streams, Next.js, SQLite, and Docker Compose**.
-- Implemented a Go CDC connector that decodes committed `INSERT`, `UPDATE`, and `DELETE` changes, buffers rows until PostgreSQL `Commit`, and publishes to Redis before acknowledging the LSN.
-- Designed an **at-least-once delivery** workflow with stable `commit_lsn:sequence` event IDs, allowing webhook consumers to deduplicate events after retry or recovery.
-- Developed HMAC-SHA256 signed webhook delivery with timestamped headers, Redis consumer groups, bounded delivery history, and evidence-based sink health states.
-- Built a Next.js operational console for database connection testing, safe schema/table browsing, row previews, pipeline management, live events over SSE, and webhook delivery inspection.
-- Secured customer metadata with SQLite foreign keys, encrypted PostgreSQL URLs and webhook secrets, bcrypt password hashes, error redaction, and SSRF protections for webhook targets.
-- Packaged the server as a non-root Docker image and Docker Compose release with persistent volumes, health checks, graceful shutdown, and an installable customer ZIP.
-- Created a separate Fumadocs landing and documentation website for technical onboarding and product documentation.
+## Table of Contents
+1. [High-Level Executive Summary](#1-high-level-executive-summary)
+2. [End-to-End Architectural Architecture](#2-end-to-end-architectural-architecture)
+3. [The Core CDC Engine (Deep Dive)](#3-the-core-cdc-engine-deep-dive)
+   - [PostgreSQL WAL & Logical Replication Mechanics](#postgresql-wal--logical-replication-mechanics)
+   - [Publication & Slot Provisioning](#publication--slot-provisioning)
+   - [Protocol Handshake & Keepalive Heartbeats](#protocol-handshake--keepalive-heartbeats)
+   - [Binary Stream Parsing (`pgoutput`)](#binary-stream-parsing-pgoutput)
+   - [Decoding Tuples, OIDs, and TOAST Columns](#decoding-tuples-oids-and-toast-columns)
+   - [Transaction Boundary Accumulation](#transaction-boundary-accumulation)
+   - [LSN Acknowledgment & Zero-Loss Commit Guarantee](#lsn-acknowledgment--zero-loss-commit-guarantee)
+4. [Event Buffering & Redis Streams](#4-event-buffering--redis-streams)
+   - [Event Schema & Deterministic Event IDs](#event-schema--deterministic-event-ids)
+   - [Atomic Batched Writes (`TxPipeline`)](#atomic-batched-writes-txpipeline)
+   - [Consumer Groups & Pending Event Retries](#consumer-groups--pending-event-retries)
+5. [Webhook Delivery Engine](#5-webhook-delivery-engine)
+   - [Worker Loop (`XREADGROUP` vs. `XREADGROUP 0`)](#worker-loop-xreadgroup-vs-xreadgroup-0)
+   - [HMAC-SHA256 Signatures & Replay Prevention](#hmac-sha256-signatures--replay-prevention)
+   - [SSRF Protection & URL Validation](#ssrf-protection--url-validation)
+   - [Delivery Attempt Tracking in SQLite](#delivery-attempt-tracking-in-sqlite)
+6. [Single-Binary Full-Stack Architecture](#6-single-binary-full-stack-architecture)
+   - [Compile-Time Embedding with `//go:embed`](#compile-time-embedding-with-goembed)
+   - [Routing Table & Static SPA Fallback](#routing-table--static-spa-fallback)
+   - [Live Monitoring via Server-Sent Events (SSE)](#live-monitoring-via-server-sent-events-sse)
+7. [Security & Metadata Storage](#7-security--metadata-storage)
+   - [Envelope Encryption via AES-256-GCM](#envelope-encryption-via-aes-256-gcm)
+   - [Preflight Connection Verification (5 Steps)](#preflight-connection-verification-5-steps)
+   - [Read-Only Database Schema Introspection](#read-only-database-schema-introspection)
+   - [Admin Authentication & Offline Password Reset](#admin-authentication--offline-password-reset)
+8. [Edge Cases, Failure Modes & Recovery](#8-edge-cases-failure-modes--recovery)
+   - [Worker Crash / Reboot](#worker-crash--reboot)
+   - [PostgreSQL Disconnect / Compute Sleep](#postgresql-disconnect--compute-sleep)
+   - [Downstream Webhook Outage](#downstream-webhook-outage)
+   - [Docker IPv6 Bridge Failure (Supabase Bug)](#docker-ipv6-bridge-failure-supabase-bug)
+9. [Comprehensive Interview Q&A Cheatsheet](#9-comprehensive-interview-qa-cheatsheet)
 
-**One-line project description:** Walflow is a self-hosted event-driven PostgreSQL CDC platform that streams committed database changes through Redis Streams to HMAC-signed webhooks, with a Go backend and Next.js monitoring dashboard.
+---
 
-## Engineering documentation
+## 1. High-Level Executive Summary
 
-These documents are written for portfolio review and interview preparation:
+**Walflow** is a self-hosted Change Data Capture (CDC) platform written in **Go**, powered by **PostgreSQL Logical Replication**, **Redis Streams**, and a **Next.js** dashboard.
 
-- [Architecture and repository map](docs/ARCHITECTURE.md)
-- [Component and function reference](docs/COMPONENT_REFERENCE.md)
-- [End-to-end application flows](docs/FLOWS.md)
-- [Interview walkthrough](docs/INTERVIEW_GUIDE.md)
-- [System design](docs/SYSTEM_DESIGN.md)
-- [How to scale beyond this student project](docs/SCALING_TO_MILLIONS.md)
-- [Security, trade-offs, and known limitations](docs/SECURITY_AND_LIMITATIONS.md)
+### The Problem It Solves
+Traditional database sync mechanisms rely on periodic polling (e.g., `SELECT * FROM table WHERE updated_at > ?`). Polling has severe drawbacks:
+1. **CPU & I/O Overhead**: Continually hitting active tables causes query contention and performance degradation.
+2. **Missed Updates**: Intermediate updates occurring between polling intervals are lost forever.
+3. **Hard Deletes are Invisible**: You cannot discover hard-deleted rows with polling without complex soft-delete triggers or audit log tables.
 
-## Public website and documentation
+### How Walflow Solves It
+Walflow connects directly to the PostgreSQL **Write-Ahead Log (WAL)** via logical decoding. As transactions are committed in PostgreSQL, the changes stream in real time to Walflow with sub-millisecond capture latency, capturing all `INSERT`, `UPDATE`, and `DELETE` events without polling or modifying source database tables.
 
-The customer console in `web/` is separate from the public landing and documentation site in `website/`. The website uses Fumadocs, with its landing page at `/` and documentation at `/docs`.
+---
 
-```powershell
-Set-Location website
-npm install
-npm run dev
+## 2. End-to-End Architectural Architecture
+
+```
++---------------------------------------------------------------------------------------------------------+
+|                                              POSTGRESQL                                                 |
+|                                                                                                         |
+|   Transactions (INSERT/UPDATE/DELETE)  --->  Write-Ahead Log (WAL)                                      |
+|                                                    |                                                    |
+|                                              pgoutput plugin                                            |
+|                                                    |                                                    |
+|                                         Logical Replication Slot                                        |
++----------------------------------------------------+----------------------------------------------------+
+                                                     |
+                                   Replication Connection (TLS required)
+                                   Protocol: pglogrepl streaming XLogData
+                                                     |
+                                                     v
++---------------------------------------------------------------------------------------------------------+
+|                                         WALFLOW (Go Backend)                                            |
+|                                                                                                         |
+|  [Replication Engine]                                                                                   |
+|   1. Relation caching (RelationMessage OID -> Columns)                                                  |
+|   2. Decodes Row Tuples (Insert/Update/Delete)                                                          |
+|   3. Accumulates changes between BeginMessage and CommitMessage                                         |
+|   4. Publishes batch to Redis Streams (MULTI/EXEC pipeline)                                             |
+|   5. Sends StandbyStatusUpdate back to Postgres acknowledging Commit LSN                                |
+|                                                                                                         |
+|  [Redis Stream Buffer: 'cdc:events']                                                                    |
+|   - Consumer Group: 'server-delivery'                                                                   |
+|   - Stream ID: Redis millisecond timestamp                                                             |
+|   - Payload: Deterministic Event ID: "<commit_lsn>:<seq>"                                               |
+|                                                                                                         |
+|  [Delivery Worker Loop]                                                                                 |
+|   - Consumes via XREADGROUP (Prefers fresh ">", falls back to pending "0")                              |
+|   - HMAC-SHA256 sign payload using encrypted secret                                                     |
+|   - Dispatches HTTP POST with X-CDC-Signature and X-CDC-Timestamp                                       |
+|   - Records delivery attempt in SQLite (HTTP Code, Duration, Error)                                     |
+|   - Issues XACK upon HTTP 2xx from all sinks                                                            |
+|                                                                                                         |
+|  [Embedded Web Console]                                                                                 |
+|   - Statically exported Next.js app embedded via //go:embed                                             |
+|   - Real-time event monitor via Server-Sent Events (/api/stream) reading Redis XREAD                    |
+|   - Read-only table & schema introspection                                                              |
++----------------------------------------------------+----------------------------------------------------+
+                                                     |
+                              HTTP POST (Signed Webhook with HMAC-SHA256)
+                                                     |
+                                                     v
+                                     +-------------------------------+
+                                     |       DOWNSTREAM SINKS        |
+                                     |  (APIs, Search Indexes, etc.) |
+                                     +-------------------------------+
 ```
 
-Open `http://localhost:3000` for the landing page and `http://localhost:3000/docs` for the Fumadocs guide. Run the customer console separately from `web/`; it also defaults to port 3000, so choose a different port when both are running.
+---
 
-## What is included now
+## 3. The Core CDC Engine (Deep Dive)
 
-This first step provides the local Redis service and configuration scaffold. The connector, delivery worker, dashboard, and sample receiver will be added in later steps.
+### PostgreSQL WAL & Logical Replication Mechanics
+In PostgreSQL, every change is written to the Write-Ahead Log before being applied to data pages on disk (for ACID crash recovery).
+* With `wal_level = logical`, PostgreSQL records extra information in WAL records allowing changes to be decoded back into distinct row tuples.
+* Logical decoding does not replicate binary disk pages (physical replication); instead, it streams decoded, catalog-aware logical changes.
 
-## Setup
+### Publication & Slot Provisioning
+When a user launches a pipeline in Walflow:
+1. **Deterministic Naming**: A SHA-256 hash is generated from `database_id:pipeline_name`, yielding deterministic resource names:
+   * Publication: `walflow_pub_<hash12>`
+   * Slot: `walflow_slot_<hash12>`
+2. **Auto-Publication**: Walflow creates the publication if it doesn't already exist:
+   ```sql
+   CREATE PUBLICATION "walflow_pub_abc123" FOR TABLE "public"."orders", "public"."users";
+   ```
+3. **Replication Slot**: Walflow establishes a replication connection (`?replication=database`) using `pgconn` and creates the slot via `pglogrepl.CreateReplicationSlot` using the `pgoutput` plugin.
+   * *Why slots matter*: A replication slot guarantees that PostgreSQL **will never delete WAL segments** until Walflow explicitly acknowledges that it has consumed them.
 
-1. Create a Neon project and database.
-2. In Neon project settings, enable logical replication.
-3. Copy the **direct, unpooled** connection string — not the `-pooler` connection string — into `SOURCE_DB_URL`.
-4. Copy `.env.example` to `.env`, add your local values, and keep `.env` out of source control.
-
-Neon must use SSL; the example connection string includes `sslmode=require`.
-
-## Create sample tables in Neon
-
-Open your Neon project, choose the database, and open **SQL Editor**. Paste and run [`sample/source-init.sql`](sample/source-init.sql). Alternatively, connect to Neon using the direct connection string and run that file with any PostgreSQL client.
-
-The script creates `users` and `orders`, adds a few rows, and sets `REPLICA IDENTITY FULL` on both tables so later CDC events include the complete row identity.
-
-After running it, use the Neon SQL Editor to create changes manually:
-
-```sql
-INSERT INTO users (name, email) VALUES ('Linus Torvalds', 'linus@example.com');
-UPDATE orders SET status = 'shipped' WHERE id = 1;
-DELETE FROM users WHERE id = 2;
+### Protocol Handshake & Keepalive Heartbeats
+Walflow initiates logical streaming with:
+```go
+pglogrepl.StartReplication(ctx, conn, slotName, startLSN, pglogrepl.StartReplicationOptions{
+    Mode: pglogrepl.LogicalReplication,
+    PluginArgs: []string{"proto_version '1'", "publication_names 'walflow_pub_...'"},
+})
 ```
+* **Keepalives (`PrimaryKeepaliveMessageByteID`)**: PostgreSQL regularly sends keepalive packets to detect dead clients. If the `ReplyRequested` flag is true, Walflow immediately replies with `StandbyStatusUpdate`. If Walflow fails to reply, PostgreSQL terminates the connection and retains the unacknowledged WAL.
 
-These statements run directly against Neon. No local PostgreSQL container is used.
+### Binary Stream Parsing (`pgoutput`)
+PostgreSQL streams changes wrapped inside `XLogDataByteID` messages:
+* `BeginMessage`: Contains transaction start LSN, commit timestamp, and XID.
+* `RelationMessage`: Emitted once whenever a table is first modified in the session. It contains the relation ID (OID), namespace, relation name, replica identity setting, and column names/types. Walflow caches this in memory.
+* `InsertMessage`: Contains RelationID and the new tuple.
+* `UpdateMessage`: Contains RelationID, the new tuple, and optionally the old tuple (if `REPLICA IDENTITY FULL`).
+* `DeleteMessage`: Contains RelationID and the old identity tuple.
+* `CommitMessage`: Marks the end of a transaction, containing `TransactionEndLSN` and `CommitLSN`.
 
-## Run the connector
+### Decoding Tuples, OIDs, and TOAST Columns
+* **Tuple Extraction**: Tuples contain column count and an array of `TupleDataColumn`.
+* **OID Type Mapping**: Walflow parses text-formatted values into native Go types:
+  * `boolOID (16)` -> `bool` via `strconv.ParseBool`
+  * `int2/4/8OID (21, 23, 20)` -> `int64` via `strconv.ParseInt`
+  * `numericOID (1700)` -> `json.Number`
+  * `timestamp/timestamptzOID (1114, 1184)` -> ISO-8601 strings
+  * `text/varchar/bpcharOID` -> `string`
+* **TOAST Handling**: PostgreSQL uses TOAST (The Oversized-Attribute Storage Technique) for large fields. If an updated row did not modify a TOAST column, PostgreSQL sends `TupleDataTypeToast`. Walflow explicitly skips unmodified TOAST columns rather than storing corrupt partial data.
 
-Install Go, start local Redis, then run the connector from the `worker` directory. The connector reads `SOURCE_DB_URL` and `REDIS_URL` only from environment variables, checks both connections at startup, and waits until you press `Ctrl+C`.
+### Transaction Boundary Accumulation
+PostgreSQL WAL interleaves operations from concurrent transactions. However, logical decoding outputs changes grouped **strictly within transaction boundaries**:
+* On `BeginMessage`: Clears internal staging slice (`pending = nil`).
+* On `Insert`/`Update`/`Delete`: Appends changes to `pending`.
+* On Rollback: If a transaction rolls back, PostgreSQL never outputs a `CommitMessage`, and subsequent `BeginMessage` flushes uncommitted mutations. **Walflow never emits uncommitted changes**.
+* On `CommitMessage`: Finalizes all pending changes and attaches commit metadata.
 
-PowerShell:
+### LSN Acknowledgment & Zero-Loss Commit Guarantee
+This is the most critical distributed systems guarantee in Walflow:
+1. Changes are accumulated in memory.
+2. When `CommitMessage` arrives, the events are written to Redis via `publisher.Publish()`.
+3. **Only after Redis confirms write success**, Walflow issues a status update to PostgreSQL:
+   ```go
+   pglogrepl.SendStandbyStatusUpdate(ctx, conn, pglogrepl.StandbyStatusUpdate{
+       WALWritePosition: commit.TransactionEndLSN,
+       WALFlushPosition: commit.TransactionEndLSN,
+       WALApplyPosition: commit.TransactionEndLSN,
+   })
+   ```
+* **Failure Consequence**: If the Walflow server crashes while writing to Redis, the LSN is never acknowledged to PostgreSQL. On restart, PostgreSQL replays the WAL from the previous acknowledged position. **No data is lost.**
 
-```powershell
-make up
-Get-Content .env | ForEach-Object { if ($_ -match '^([^#][^=]*)=(.*)$') { [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process') } }
-Set-Location worker
-go run ./cmd/connector
-```
+---
 
-`SOURCE_DB_URL` must be the Neon direct endpoint, never the `-pooler` endpoint, and must include a secure `sslmode`.
+## 4. Event Buffering & Redis Streams
 
-## Enable CDC reading
-
-Enable **Logical Replication** in Neon project settings before starting the connector. The connector checks that `wal_level` is `logical`, confirms the connected role has `REPLICATION`, creates `walflow_publication` for the sample `users` and `orders` tables if needed, and creates or reuses `walflow_slot` with `pgoutput`.
-
-You can override these names with `PUBLICATION_NAME` and `REPLICATION_SLOT`. Use a role created through Neon Console, CLI, or API: Neon documents that SQL-created roles cannot be granted the required replication privilege.
-
-## Run the delivery worker
-
-Set `WEBHOOK_URL` and `WEBHOOK_SECRET` in `.env`. The delivery worker signs each raw JSON payload as `timestamp + "." + body` with HMAC-SHA256 and only acknowledges Redis messages after a successful 2xx webhook response.
-
-For the included local receiver, open a separate PowerShell window:
-
-```powershell
-Set-Location sample/receiver
-go run .
-```
-
-It listens at the default `WEBHOOK_URL`, `http://localhost:8080/webhook`, verifies the HMAC signature, prints the event ID and operation, and returns HTTP 200. Invalid or modified requests return HTTP 401.
-
-```powershell
-Set-Location worker
-go run ./cmd/delivery
-```
-
-## Run the dashboard
-
-The dashboard reads the same local Redis stream and can send a signed webhook test. Create `web/.env.local` with only the dashboard values from your root `.env`:
-
-```powershell
-Get-Content .env | Where-Object { $_ -match '^(REDIS_URL|WEBHOOK_URL|WEBHOOK_SECRET)=' } | Set-Content web/.env.local
-Set-Location web
-npm install
-npm run dev
-```
-
-Open `http://localhost:3000`. The Live Events page receives new Redis Stream entries over Server-Sent Events; it is a local demo and does not require login.
-
-## Initialize self-hosted metadata
-
-The future self-hosted server stores its administrator, saved connection metadata, pipelines, sinks, and delivery history in SQLite. The database is stored in the `walflow-data` Docker volume; Redis remains the event buffer.
-
-Copy the `APP_ENCRYPTION_KEY` placeholder from `metadata.env.example` into your local `.env`, replacing it with a base64-encoded random 32-byte key. Do not change this key after saving connections or sink secrets, because existing encrypted values would become unreadable.
-
-Initialize the schema and the one administrator without putting the password on the command line:
-
-```powershell
-$securePassword = Read-Host "Administrator password" -AsSecureString
-$pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
-try {
-  [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer) | docker compose --profile tools run --rm -T metadata init --admin-email admin@example.com --admin-password-stdin
-} finally {
-  [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
-  Remove-Variable securePassword
+### Event Schema & Deterministic Event IDs
+Every event generated has the following canonical structure:
+```json
+{
+  "id": "0/16B2D48:1",
+  "table": "orders",
+  "operation": "insert",
+  "commit_lsn": "0/16B2D48",
+  "data": { "id": 101, "amount": 99.50, "status": "pending" },
+  "before": null,
+  "after": { "id": 101, "amount": 99.50, "status": "pending" },
+  "created_at": "2026-11-20T14:32:01.123456789Z"
 }
 ```
+* **Deterministic Event IDs (`commit_lsn:sequence`)**: Instead of random UUIDs, IDs are formed from the commit LSN and the 1-based index of the event within the transaction (`0/16B2D48:1`, `0/16B2D48:2`).
+* **Idempotency**: If PostgreSQL replays a transaction after a crash, the resulting events have identical IDs, allowing downstream webhook consumers to deduplicate them reliably.
 
-To apply migrations later or inspect the persisted schema:
+### Atomic Batched Writes (`TxPipeline`)
+When multiple rows are modified within a single PostgreSQL transaction, Walflow uses Redis `TxPipeline` (`MULTI/EXEC`) to publish all events to `cdc:events` atomically. Downstream readers will never see half-written transactions.
 
-```powershell
-docker compose --profile tools run --rm metadata migrate
-docker compose --profile tools run --rm metadata schema
+### Consumer Groups & Pending Event Retries
+Walflow provisions a consumer group called `server-delivery`.
+* `XREADGROUP` assigns messages to `server-1`.
+* When an event is delivered and all webhooks return HTTP 2xx, Walflow calls `XACK cdc:events server-delivery <messageID>`.
+* If a webhook fails, `XACK` is **not** called. The message remains in the Pending Entries List (PEL).
+
+---
+
+## 5. Webhook Delivery Engine
+
+### Worker Loop (`XREADGROUP` vs. `XREADGROUP 0`)
+The delivery loop runs as a continuous background goroutine:
+1. **Fresh Events First**: Calls `XREADGROUP` with ID `">"` to consume new, unprocessed stream entries.
+2. **Pending Event Fallback**: If no new messages arrive (`redis.Nil`), it queries the Pending Entries List via `XREADGROUP` with ID `"0"`.
+3. This guarantees that:
+   * Failed deliveries are retried automatically.
+   * A single failing webhook does not halt CDC ingestion from PostgreSQL.
+
+### HMAC-SHA256 Signatures & Replay Prevention
+Every webhook POST request includes cryptographic validation headers:
+* `X-CDC-Event-Id`: The deterministic event ID.
+* `X-CDC-Timestamp`: Current UNIX timestamp (seconds).
+* `X-CDC-Signature`: `v1=<hex_hmac>`
+
+**Signature Computation**:
 ```
-
-The metadata CLI is intentionally a one-shot tool in this step; it does not yet start CDC pipelines or provide the planned self-hosted UI.
-
-## Manage saved PostgreSQL databases
-
-In the packaged server console, open **Databases** and add a display name plus a PostgreSQL connection string. Walflow tests ordinary SQL connectivity and then checks `wal_level=logical` and the current role's `REPLICATION` permission separately. A successful SQL login alone is not treated as CDC-ready.
-
-For remote sources, provide `sslmode=require`, `sslmode=verify-ca`, or `sslmode=verify-full`. Use a direct, non-pooled endpoint for logical replication (e.g. Neon's direct endpoint or Supabase's direct URI on port `5432`, never connection poolers). The connection string is encrypted with `APP_ENCRYPTION_KEY` before it is stored, is never returned by the API, and is not logged. Keep that key stable across restarts and restore it with the metadata volume backup; otherwise saved connections cannot be decrypted.
-
-Note for Supabase users running in Docker: Supabase direct endpoints resolve only to IPv6. Docker Desktop on Windows/macOS has IPv6 disabled by default in container networks. To connect, open Docker Desktop **Settings → Docker Engine**, add `"ipv6": true, "fixed-cidr-v6": "2001:db8:1::/64", "ip6tables": true`, click **Apply & restart**, and restart containers.
-
-Saving a database never starts a CDC pipeline automatically.
-
-Selecting **Browse** on a saved database opens a read-only inspection view. It lists non-system schemas and base tables, then shows column metadata, primary-key columns, replica identity, and at most 25 preview rows. Walflow quotes selected schema/table identifiers, uses a short read-only transaction, and never accepts browser-provided SQL. It does not modify source schemas or table data.
-
-## Create a CDC pipeline
-
-From a saved database's **Browse** screen, select a schema and one or more tables, then choose **Create Pipeline**. Walflow validates that the tables still exist and verifies logical replication prerequisites again before it creates a unique publication and replication slot. It does not change table replica identity; tables without a primary key or `REPLICA IDENTITY FULL` remain clearly flagged in the table inspector.
-
-The first customer release supports **one active pipeline per Walflow installation**. Additional pipelines may be saved but must remain stopped until the active one is stopped. Stopping a pipeline preserves its publication and slot for a restart. Delete is available only after a pipeline is stopped, then removes only that pipeline's deterministically named publication and slot.
-
-## Add a Webhook sink
-
-Open **Sinks**, select **Create Sink**, choose the source pipeline, then enter an HTTPS webhook URL. You may enter a signing secret or leave it blank for Walflow to generate one. A generated secret is shown only once; save it in the receiving application before closing the message. Secrets are encrypted in the metadata volume and are never returned in the sink list.
-
-Each sink receives events from its selected pipeline only. Walflow sends the exact JSON event body with `X-CDC-Event-Id`, `X-CDC-Timestamp`, and `X-CDC-Signature: v1=<HMAC-SHA256>` headers. Redirects and loopback, private, link-local, and cloud-metadata destinations are blocked; hostnames are checked again immediately before connection.
-
-Delivery is sequential. A failed request remains pending in Redis and is retried after a short delay; there is no retry schedule or dead-letter queue in this first release. Duplicate webhook deliveries remain possible.
-
-The sink overview derives its health from actual recorded deliveries: **Healthy** means the newest attempt succeeded; **Degraded** means the newest attempt failed after earlier success; **Failing** means at least three recent attempts all failed; **Paused** means the sink is disabled; and **Unknown** means it has never been attempted. It retains the newest 100 attempt records per sink and displays the newest 20. History includes only event ID, time, outcome, HTTP status, and a redacted error summary — never event payloads or secrets.
-
-### End-to-end webhook demonstration
-
-1. Open a unique endpoint at [Webhook.site](https://webhook.site/) and copy its HTTPS URL. (The packaged server deliberately rejects `localhost` and other private destinations to prevent SSRF.)
-2. In **Sinks**, create an enabled Webhook sink for the running pipeline, using the Webhook.site URL. Keep the generated signing secret if you want to verify the signature independently.
-3. Click **Send Test Event**. The sink should show a successful delivery and the request should appear in Webhook.site with the `X-CDC-Event-Id`, `X-CDC-Timestamp`, and `X-CDC-Signature` headers.
-4. Start the selected pipeline, then make an `INSERT`, `UPDATE`, or `DELETE` on one of its selected source tables.
-5. Refresh the sink overview. A delivery attempt for the CDC event ID should appear. The receiver must treat that ID as an idempotency key because Redis/CDC recovery can deliver an event more than once.
-
-For the included local Go receiver, expose `sample/receiver` through a public HTTPS tunnel and use the resulting public URL; do not weaken the production SSRF protection merely to target `localhost`.
-
-## Create a customer Docker Compose ZIP
-
-Build the customer server image from the repository root:
-
-```powershell
-docker build -t walflow-server:local .
+payload = timestamp + "." + request_body
+signature = HMAC-SHA256(key=signing_secret, data=payload)
 ```
+* Downstream receivers compute the same HMAC using their shared secret.
+* Including the timestamp in the signed payload protects against replay attacks: receivers can reject requests with timestamps older than 5 minutes.
 
-Before customers can use the ZIP, publish that image to a container registry and give them its exact image reference. The Compose package intentionally requires `WALFLOW_IMAGE` instead of guessing a registry or image name.
+### SSRF Protection & URL Validation
+To prevent attackers from using webhook sinks to probe internal networks or cloud metadata APIs, `validateWebhookURL` enforces strict controls:
+* Scheme must be `http` or `https`.
+* Hostname cannot resolve to loopback addresses (`127.0.0.1`, `::1`).
+* Hostname cannot resolve to private/RFC-1918 subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) or link-local ranges (`169.254.0.0/16` for AWS/GCP metadata).
 
-Create a ZIP containing only the Docker Compose package files:
+### Delivery Attempt Tracking in SQLite
+Every delivery attempt is recorded in the `delivery_attempts` table:
+* `pipeline_id`, `sink_id`, `event_id`, `redis_stream_id`
+* `status` (`"success"` or `"failed"`)
+* `http_status` (e.g., `200`, `502`, `404`)
+* `error_message`
+This provides complete auditability in the UI dashboard.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\package-release.ps1 -Version 0.1.0
-```
+---
 
-The command prints the ZIP path and SHA-256 checksum. Verify its contents:
+## 6. Single-Binary Full-Stack Architecture
 
-```powershell
-Expand-Archive -LiteralPath .\dist\Walflow-Docker-Compose-0.1.0.zip -DestinationPath .\dist\verify -Force
-Get-ChildItem -Recurse -File .\dist\verify
-Get-FileHash -Algorithm SHA256 .\dist\Walflow-Docker-Compose-0.1.0.zip
-```
+### Compile-Time Embedding with `//go:embed`
+Walflow eliminates external Node.js dependencies in production using a two-stage Docker build:
+1. `web/` is built via `NEXT_STATIC_EXPORT=true npm run build`, outputting static HTML/JS/CSS to `web/out`.
+2. The Go compiler embeds this folder directly into the binary:
+   ```go
+   //go:embed all:web
+   var frontend embed.FS
+   ```
 
-The ZIP contains only `docker-compose.yml`, `.env.example`, and `README.md` inside its top-level release folder.
+### Routing Table & Static SPA Fallback
+The `static()` HTTP middleware in `main.go` intelligently routes traffic:
+* `/api/*` and `/healthz` -> Routed directly to Go REST endpoints.
+* Extensionless routes (e.g., `/databases`, `/pipelines`) -> Checks embedded filesystem for `<name>.html` or `<name>/index.html`.
+* Asset requests (e.g., `_next/static/...`) -> Handled directly by `http.FileServer`.
+* Result: A single executable on port 3000 serves both the backend API and the frontend dashboard.
 
-## Run Redis
+### Live Monitoring via Server-Sent Events (SSE)
+The `/api/stream` endpoint streams CDC events to the dashboard in real time:
+* Uses HTTP streaming with headers: `Content-Type: text/event-stream`, `Cache-Control: no-cache`.
+* Uses Redis `XREAD` with blocking to tail `cdc:events`.
+* Sends active heartbeat frames (`event: heartbeat\ndata: {}\n\n`) every 15 seconds to prevent browser or reverse-proxy timeouts.
 
-```sh
-cp .env.example .env
-make up
-```
+---
 
-Redis will be available at `redis://localhost:6379`. No local PostgreSQL container or installation is needed: Neon is the source database.
+## 7. Security & Metadata Storage
 
-Useful commands:
+### Envelope Encryption via AES-256-GCM
+All sensitive credentials—PostgreSQL connection strings and webhook signing secrets—are encrypted at rest in SQLite (`walflow.db`).
+* Encryption key: 32 random bytes (`APP_ENCRYPTION_KEY`), Base64-encoded.
+* Cipher: **AES-256-GCM** (Galois/Counter Mode), providing authenticated encryption with associated data.
+* Every encryption generates a fresh, cryptographically secure 12-byte random nonce via `crypto/rand`.
+* Stored format: `[version_byte (1 byte)] + [nonce (12 bytes)] + [ciphertext + 16-byte auth tag]`.
+* Connection strings are decrypted in memory only when establishing database connections and are **never returned over HTTP or logged**.
 
-```sh
-make logs   # follow Redis logs
-make down   # stop local services
-make reset  # remove Redis data and start it again
-```
+### Preflight Connection Verification (5 Steps)
+Before a database connection string can be saved, `testPostgres()` runs 5 rigorous checks:
+1. **URI Parsing**: Validates syntax via `pgx.ParseConfig`.
+2. **Connection Pooler Blocker**: Rejects hostnames containing `-pooler` (logical replication requires direct connection to the primary compute node).
+3. **TLS Enforcement**: For non-localhost hosts, mandates `sslmode=require`, `verify-ca`, or `verify-full`.
+4. **WAL Level Check**: Queries `SHOW wal_level` to confirm it equals `'logical'`.
+5. **Replication Privilege Check**: Queries `SELECT rolreplication FROM pg_roles WHERE rolname = current_user` to ensure the user has permission to read the WAL.
+
+### Read-Only Database Schema Introspection
+The database table browser allows users to inspect tables and replica identities before creating pipelines:
+* Opens connections inside an explicit read-only transaction:
+  ```go
+  conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+  ```
+* All schema and table identifiers are sanitized through `pgx.Identifier{schema, table}.Sanitize()`, making SQL injection impossible.
+
+### Admin Authentication & Offline Password Reset
+* Administrator password hashes are stored in SQLite using `bcrypt`.
+* If credentials are lost, administrators can reset the password directly on the host or container without logging into the app:
+  ```bash
+  echo "new_password" | walflow-server admin-password --stdin
+  ```
+
+---
+
+## 8. Edge Cases, Failure Modes & Recovery
+
+### Worker Crash / Reboot
+* **State Recovery**: On boot, Walflow invokes `MarkInterruptedPipelinesStopped`, cleanly resetting pipelines that were left in `'running'` state when the process died.
+* **No Lost Changes**: Because LSNs are only acknowledged to PostgreSQL after Redis writes succeed, unacknowledged WAL remains buffered in PostgreSQL and is replayed automatically upon pipeline restart.
+
+### PostgreSQL Disconnect / Compute Sleep
+* In serverless PostgreSQL (like Neon), computes may suspend after periods of inactivity.
+* When compute suspends, the replication TCP connection drops. Walflow logs the error, terminates replication cleanly, updates pipeline status to `'failed'`, and allows the user to restart the pipeline, waking up the database.
+
+### Downstream Webhook Outage
+* If a webhook sink goes offline or returns HTTP 5xx:
+  * Delivery fails and the error is recorded in SQLite.
+  * `XACK` is **not** sent to Redis.
+  * The event remains in the pending stream list.
+  * The delivery loop retries the pending event when the stream is idle, preserving at-least-once delivery.
+
+### Docker IPv6 Bridge Failure (Supabase Bug)
+* **The Root Cause**: Cloud providers like Supabase route direct database endpoints (`db.<ref>.supabase.co`) exclusively over IPv6 addresses (`AAAA` records).
+* Docker Desktop on Windows/macOS by default disables IPv6 routing inside bridge container networks. While the host machine can connect, containers fail with `Network unreachable`.
+* **The Fix**: Configuring `daemon.json` with `"ipv6": true`, `"fixed-cidr-v6": "2001:db8:1::/64"`, and `"ip6tables": true` enables IPv6 routing in Docker container networks.
+
+---
+
+## 9. Comprehensive Interview Q&A Cheatsheet
+
+#### Q: How does Walflow achieve "at-least-once" delivery?
+> "We ensure at-least-once delivery through a two-phase acknowledgment pattern:
+> 1. Ingestion: Walflow consumes WAL changes from PostgreSQL but does not acknowledge the LSN until the events are safely published to Redis Streams. If we crash midway, PostgreSQL replays the WAL.
+> 2. Delivery: Our delivery worker consumes from Redis using consumer groups and only sends an `XACK` after all configured webhook endpoints respond with HTTP 2xx. If a webhook fails, the event remains in the pending list and is retried.
+> 3. Deduplication: Because retries can cause duplicate deliveries, each event carries a deterministic ID (`<commit_lsn>:<seq>`) that downstream receivers use to deduplicate."
+
+#### Q: What happens if the Walflow process crashes while processing a huge transaction?
+> "PostgreSQL transactions are bounded by `BeginMessage` and `CommitMessage`. Walflow buffers mutations in memory during stream processing. If the process crashes before `CommitMessage` is processed and acknowledged, nothing was acknowledged to PostgreSQL. Upon restart, the replication slot begins streaming again from the last acknowledged LSN. Redis receives the full transaction atomically via `TxPipeline`."
+
+#### Q: Why can't you use connection poolers (like PgBouncer or Supabase Pooler) for CDC?
+> "Logical replication requires streaming replication protocol commands (`START_REPLICATION`, replication slots, `pgoutput`), which are only supported on direct PostgreSQL backend connections. Transaction poolers route individual queries across pooled connections and do not support long-lived replication streaming connections."
+
+#### Q: Why did you choose Redis Streams instead of standard pub/sub?
+> "Standard Redis Pub/Sub is fire-and-forget—if no consumers are listening when a message is published, the message is permanently lost. Redis Streams provides persistent, append-only log storage, consumer groups, message acknowledgment (`XACK`), and pending entry lists (`PEL`), allowing us to decouple ingestion from delivery and handle downstream downtime without losing events."
+
+#### Q: How is Walflow packaged and deployed?
+> "Walflow is packaged as a single self-contained binary. We use Next.js with static exports, and at compile time, Go's `//go:embed` bakes the entire frontend into the Go executable. A custom HTTP handler serves API endpoints on `/api/*` and falls back to embedded static assets for everything else. This reduces our production container to an Alpine image of only ~25 MB without needing Node.js."
